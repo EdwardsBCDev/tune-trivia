@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { 
   Play, 
@@ -99,7 +98,12 @@ export default function App() {
   // Spotify Integration State
   const [spotifyConnected, setSpotifyConnected] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [spotifyClientId, setSpotifyClientId] = useState(() => localStorage.getItem('spotify_client_id') || '');
+  
+  // UPDATED: Automatically check Environment Variable from Coolify first
+  const [spotifyClientId, setSpotifyClientId] = useState(() => 
+    import.meta.env.VITE_SPOTIFY_CLIENT_ID || localStorage.getItem('spotify_client_id') || ''
+  );
+  
   const [manualRedirectUri, setManualRedirectUri] = useState(() => localStorage.getItem('spotify_redirect_uri_override') || '');
   
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -188,14 +192,28 @@ export default function App() {
     setIsHost(true);
   };
 
+  // UPDATED: Corrected Spotify Connection Logic
   const connectSpotify = () => {
     if (!spotifyClientId) {
       setShowSettings(true);
       return;
     }
-    const scopes = 'user-read-playback-state user-modify-playback-state streaming user-read-currently-playing';
+    
+    const AUTH_ENDPOINT = "https://accounts.spotify.com/authorize";
+    const scopes = [
+      'user-read-playback-state',
+      'user-modify-playback-state',
+      'streaming',
+      'user-read-currently-playing',
+      'user-read-email',
+      'user-read-private'
+    ].join(' ');
+
+    // Ensure URI ends with slash if that's how it's set in Spotify Dashboard
     const finalUri = suggestedRedirectUri.endsWith('/') ? suggestedRedirectUri : suggestedRedirectUri + '/';
-    const authUrl = `https://accounts.spotify.com/authorize?client_id=${spotifyClientId}&response_type=token&redirect_uri=${encodeURIComponent(finalUri)}&scope=${encodeURIComponent(scopes)}`;
+    
+    const authUrl = `${AUTH_ENDPOINT}?client_id=${spotifyClientId}&redirect_uri=${encodeURIComponent(finalUri)}&scope=${encodeURIComponent(scopes)}&response_type=token&show_dialog=true`;
+    
     window.location.href = authUrl;
   };
 
@@ -469,7 +487,20 @@ export default function App() {
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Client ID</label>
-                  <input type="text" value={spotifyClientId} onChange={(e) => setSpotifyClientId(e.target.value)} placeholder="From Spotify Dashboard" className="w-full bg-[#121212] border border-[#282828] focus:border-[#1DB954] outline-none rounded-xl px-4 py-3 text-sm font-mono text-[#1DB954]" />
+                  <div className="flex gap-2">
+                    <input 
+                      type="text" 
+                      value={spotifyClientId} 
+                      onChange={(e) => setSpotifyClientId(e.target.value)} 
+                      placeholder="Enter ID or set VITE_SPOTIFY_CLIENT_ID" 
+                      className="w-full bg-[#121212] border border-[#282828] focus:border-[#1DB954] outline-none rounded-xl px-4 py-3 text-sm font-mono text-[#1DB954]" 
+                    />
+                    {import.meta.env.VITE_SPOTIFY_CLIENT_ID && (
+                      <div className="flex items-center px-3 bg-[#1DB954]/10 text-[#1DB954] rounded-xl text-xs font-bold border border-[#1DB954]/20">
+                         ENV
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
               <div className="flex gap-3">
