@@ -284,7 +284,7 @@ export default function App() {
       setShowSettings(true);
       return;
     }
-    // REAL SPOTIFY URL
+    // *** FIX: USE OFFICIAL SPOTIFY AUTH URL ***
     const AUTH_ENDPOINT = "https://accounts.spotify.com/authorize";
     const scopes = [
         'user-read-playback-state', 
@@ -367,13 +367,12 @@ export default function App() {
 
     if (tokenToUse) {
         try {
-            // REAL SPOTIFY API URL
+            // *** FIX: USE OFFICIAL SPOTIFY SEARCH API ***
             const response = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=10`, {
                 headers: { Authorization: `Bearer ${tokenToUse}` }
             });
             
             if (response.status === 401) {
-                // Token expired
                 setSearchError("Host Spotify token expired. Host needs to reconnect.");
                 throw new Error("Token expired");
             }
@@ -399,7 +398,6 @@ export default function App() {
     }
 
     // 2. Fallback to Gemini AI or Mock Data
-    // We only use this if Spotify fails or no token is found
     const aiMatched = await searchMusicAI(searchQuery);
     const results: Song[] = aiMatched.length > 0 ? aiMatched.map((s, idx) => ({
         id: `ai-${idx}-${Date.now()}`,
