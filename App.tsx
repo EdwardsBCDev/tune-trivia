@@ -71,12 +71,14 @@ const Card: React.FC<{ children: React.ReactNode; className?: string }> = ({ chi
 // --- Main App Component ---
 
 export default function App() {
-  // --- LOCAL STATE ---
+  // --- STATE ---
+  
+  // Local UI State
   const [roomCodeInput, setRoomCodeInput] = useState('');
   const [currentPlayerId, setCurrentPlayerId] = useState<string | null>(() => sessionStorage.getItem('tune_player_id'));
   const [playerName, setPlayerName] = useState(() => sessionStorage.getItem('tune_player_name') || '');
   
-  // --- GAME STATE (Synced) ---
+  // Game State (Synced)
   const [gameState, setGameState] = useState<GameState>({
     roomId: '', 
     phase: GamePhase.LOBBY,
@@ -88,18 +90,22 @@ export default function App() {
     currentRevealIndex: 0,
   });
 
-  // --- UI STATE ---
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Song[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isAnnouncing, setIsAnnouncing] = useState(false);
+  
+  // Listening Phase State
   const [listeningIndex, setListeningIndex] = useState(0);
+
+  // Spotify Integration State
+  const [spotifyConnected, setSpotifyConnected] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   
-  // --- SPOTIFY TOKENS ---
+  // Tokens
   const [spotifyToken, setSpotifyToken] = useState<string | null>(() => localStorage.getItem('spotify_access_token'));
-  const [hostToken, setHostToken] = useState<string | null>(null); 
+  const [hostToken, setHostToken] = useState<string | null>(null); // Token shared by host via Firebase
 
   const [spotifyClientId, setSpotifyClientId] = useState(() => 
     import.meta.env.VITE_SPOTIFY_CLIENT_ID || localStorage.getItem('spotify_client_id') || ''
@@ -109,12 +115,13 @@ export default function App() {
   
   const audioContextRef = useRef<AudioContext | null>(null);
 
-  // --- FIREBASE SYNC (THE BRAIN) ---
+  // --- FIREBASE SYNC EFFECT ---
   useEffect(() => {
     if (!gameState.roomId || !db) return;
 
     const roomRef = ref(db, `rooms/${gameState.roomId}`);
     
+    // Listen for changes
     const unsubscribe = onValue(roomRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
@@ -127,19 +134,22 @@ export default function App() {
             guesses: data.guesses || []
         }));
         // CRITICAL: Sync the host's token to the guest
-        if (data.hostToken) setHostToken(data.hostToken);
+        if (data.hostToken) {
+            setHostToken(data.hostToken);
+        }
       }
     });
 
     return () => unsubscribe();
   }, [gameState.roomId]);
 
-  // --- HOST PROXY LOGIC (THE SEARCH FIX) ---
+  // --- HELPER: AM I HOST? ---
   const myPlayer = gameState.players.find(p => p.id === currentPlayerId);
   const isHost = myPlayer?.isHost;
 
+  // --- SPOTIFY TOKEN SHARING (THE HOST PROXY) ---
+  // If I am the host and I have a token, share it to Firebase
   useEffect(() => {
-      // If I am the host and I have a valid token, share it with the room!
       if (isHost && spotifyToken && gameState.roomId && db) {
           update(ref(db, `rooms/${gameState.roomId}`), { hostToken: spotifyToken });
       }
@@ -152,7 +162,6 @@ export default function App() {
     ? currentOrigin.replace(/(\d+\.\d+\.\d+\.\d+)/, '$1.nip.io') + '/'
     : currentOrigin + '/');
 
-  // Check URL for token on return
   useEffect(() => {
     const hash = window.location.hash;
     if (hash && hash.includes('access_token')) {
@@ -166,31 +175,7 @@ export default function App() {
     }
   }, []);
 
-  const [spotifyConnected, setSpotifyConnected] = useState(!!spotifyToken);
-
-  const connectSpotify = () => {
-    if (!spotifyClientId) {
-      setShowSettings(true);
-      return;
-    }
-    // *** OFFICIAL URLS ***
-    const AUTH_ENDPOINT = "https://accounts.spotify.com/authorize";
-    const scopes = [
-        'user-read-playback-state', 
-        'user-modify-playback-state', 
-        'streaming', 
-        'user-read-private', 
-        'user-read-email'
-    ].join(' ');
-    
-    const finalUri = suggestedRedirectUri.endsWith('/') ? suggestedRedirectUri : suggestedRedirectUri + '/';
-    
-    const authUrl = `${AUTH_ENDPOINT}?client_id=${spotifyClientId}&redirect_uri=${encodeURIComponent(finalUri)}&scope=${encodeURIComponent(scopes)}&response_type=token&show_dialog=true`;
-    
-    window.location.href = authUrl;
-  };
-
-  // --- AUDIO ANNOUNCER ---
+  // --- AUDIO LOGIC ---
   const initAudio = () => {
     if (!audioContextRef.current) {
       audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -236,7 +221,7 @@ export default function App() {
   }, [spotifyClientId, manualRedirectUri]);
 
 
-  // --- GAMEPLAY ACTIONS ---
+  // --- GAME ACTIONS ---
 
   const syncUpdate = (updates: Partial<GameState>) => {
     if (!db || !gameState.roomId) return;
@@ -245,7 +230,7 @@ export default function App() {
 
   const createRoom = async () => {
     if (!db) { 
-        alert("Firebase not connected! Check Coolify Environment Variables."); 
+        alert("Firebase not connected! Please check your Coolify Environment Variables."); 
         return; 
     }
     initAudio();
@@ -313,6 +298,29 @@ export default function App() {
     }
   };
 
+  const connectSpotify = () => {
+    if (!spotifyClientId) {
+      setShowSettings(true);
+      return;
+    }
+    // *** REAL SPOTIFY AUTH URL ***
+    const AUTH_ENDPOINT = "https://accounts.spotify.com/authorize";
+    const scopes = [
+        'user-read-playback-state', 
+        'user-modify-playback-state', 
+        'streaming', 
+        'user-read-currently-playing', 
+        'user-read-email', 
+        'user-read-private'
+    ].join(' ');
+    
+    const finalUri = suggestedRedirectUri.endsWith('/') ? suggestedRedirectUri : suggestedRedirectUri + '/';
+    
+    const authUrl = `${AUTH_ENDPOINT}?client_id=${spotifyClientId}&redirect_uri=${encodeURIComponent(finalUri)}&scope=${encodeURIComponent(scopes)}&response_type=token&show_dialog=true`;
+    
+    window.location.href = authUrl;
+  };
+
   const startGame = async () => {
     if (gameState.players.length < 2) {
       alert("Need at least 2 players to start!");
@@ -367,46 +375,49 @@ export default function App() {
     }
   };
 
-  // --- SEARCH LOGIC (OFFICIAL ENDPOINT) ---
+  // --- UPDATED SEARCH LOGIC (OFFICIAL ENDPOINT) ---
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     setIsSearching(true);
     setSearchError(null);
 
-    // Prefer the Host's token (via Firebase) or your own
+    // 1. Try Spotify Search (Using Host Token or Own Token)
     const tokenToUse = spotifyToken || hostToken;
 
     if (tokenToUse) {
         try {
-            // *** OFFICIAL API CALL ***
+            // *** REAL SPOTIFY API SEARCH URL ***
             const response = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=10`, {
                 headers: { Authorization: `Bearer ${tokenToUse}` }
             });
             
             if (response.status === 401) {
-                setSearchError("Host needs to re-sync Spotify in Settings.");
-            } else {
-                const data = await response.json();
-                if (data.tracks && data.tracks.items) {
-                    const spotifyResults: Song[] = data.tracks.items.map((t: any) => ({
-                        id: t.id,
-                        title: t.name,
-                        artist: t.artists[0].name,
-                        albumArt: t.album.images[0]?.url || 'https://picsum.photos/300/300'
-                    }));
-                    setSearchResults(spotifyResults);
-                    setIsSearching(false);
-                    return; // Success!
-                }
+                // Token expired
+                setSearchError("Host Spotify token expired. Host needs to reconnect.");
+                throw new Error("Token expired");
+            }
+
+            const data = await response.json();
+            
+            if (data.tracks && data.tracks.items) {
+                const spotifyResults: Song[] = data.tracks.items.map((t: any) => ({
+                    id: t.id,
+                    title: t.name,
+                    artist: t.artists[0].name,
+                    albumArt: t.album.images[0]?.url || 'https://picsum.photos/300/300'
+                }));
+                setSearchResults(spotifyResults);
+                setIsSearching(false);
+                return; // Exit early if Spotify worked
             }
         } catch (e) {
-            console.error("Spotify search failed", e);
+            console.error("Spotify search failed, falling back...", e);
         }
     } else {
-        setSearchError("Host must Sync Spotify first!");
+        console.warn("No Spotify token available (neither own nor host)");
     }
 
-    // Fallback to Mock Data
+    // 2. Fallback to Gemini AI or Mock Data
     const aiMatched = await searchMusicAI(searchQuery);
     const results: Song[] = aiMatched.length > 0 ? aiMatched.map((s, idx) => ({
         id: `ai-${idx}-${Date.now()}`,
