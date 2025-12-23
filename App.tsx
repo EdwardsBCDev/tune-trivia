@@ -130,7 +130,6 @@ export default function App() {
   const isHost = myPlayer?.isHost;
 
   useEffect(() => {
-      // If I am the host and I have a token, write it to Firebase so guests can use it
       if (isHost && spotifyToken && gameState.roomId && db) {
           update(ref(db, `rooms/${gameState.roomId}`), { hostToken: spotifyToken });
       }
@@ -284,7 +283,7 @@ export default function App() {
       setShowSettings(true);
       return;
     }
-    // *** FIX: USE OFFICIAL SPOTIFY AUTH URL ***
+    // *** OFFICIAL SPOTIFY AUTH URL ***
     const AUTH_ENDPOINT = "https://accounts.spotify.com/authorize";
     const scopes = [
         'user-read-playback-state', 
@@ -356,18 +355,17 @@ export default function App() {
     }
   };
 
-  // --- UPDATED SEARCH LOGIC (FIXED) ---
+  // --- UPDATED SEARCH LOGIC (OFFICIAL ENDPOINT) ---
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     setIsSearching(true);
     setSearchError(null);
 
-    // 1. Try Spotify Search (Using Host Token or Own Token)
     const tokenToUse = spotifyToken || hostToken;
 
     if (tokenToUse) {
         try {
-            // *** FIX: USE OFFICIAL SPOTIFY SEARCH API ***
+            // *** OFFICIAL SPOTIFY SEARCH API ***
             const response = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=10`, {
                 headers: { Authorization: `Bearer ${tokenToUse}` }
             });
@@ -388,7 +386,7 @@ export default function App() {
                 }));
                 setSearchResults(spotifyResults);
                 setIsSearching(false);
-                return; // Exit early if Spotify worked
+                return;
             }
         } catch (e) {
             console.error("Spotify search failed, falling back...", e);
@@ -397,14 +395,8 @@ export default function App() {
         console.warn("No Spotify token available (neither own nor host)");
     }
 
-    // 2. Fallback to Gemini AI or Mock Data
-    const aiMatched = await searchMusicAI(searchQuery);
-    const results: Song[] = aiMatched.length > 0 ? aiMatched.map((s, idx) => ({
-        id: `ai-${idx}-${Date.now()}`,
-        title: s.title,
-        artist: s.artist,
-        albumArt: `https://picsum.photos/seed/${s.title}/300/300`
-    })) : MOCK_SONGS.filter(s => 
+    // Fallback to Mock
+    const results = MOCK_SONGS.filter(s => 
         s.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
         s.artist.toLowerCase().includes(searchQuery.toLowerCase())
     );
