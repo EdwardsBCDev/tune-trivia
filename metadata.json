@@ -1,0 +1,7 @@
+{
+  "name": "Tune Trivia: Social Music Quiz",
+  "description": "A multiplayer music trivia game where players choose songs based on prompts and guess who picked what. Features a Spotify-inspired UI and Gemini-powered prompt generation.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
