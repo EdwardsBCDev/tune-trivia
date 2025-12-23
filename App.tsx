@@ -102,6 +102,10 @@ export default function App() {
   const [spotifyConnected, setSpotifyConnected] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   
+  // Tokens
+  const [spotifyToken, setSpotifyToken] = useState<string | null>(() => localStorage.getItem('spotify_access_token'));
+  const [hostToken, setHostToken] = useState<string | null>(null); // Token shared by host via Firebase
+
   const [spotifyClientId, setSpotifyClientId] = useState(() => 
     import.meta.env.VITE_SPOTIFY_CLIENT_ID || localStorage.getItem('spotify_client_id') || ''
   );
@@ -111,7 +115,6 @@ export default function App() {
   const audioContextRef = useRef<AudioContext | null>(null);
 
   // --- FIREBASE SYNC EFFECT ---
-  // This is the magic that makes it multiplayer
   useEffect(() => {
     if (!gameState.roomId || !db) return;
 
@@ -122,13 +125,29 @@ export default function App() {
       const data = snapshot.val();
       if (data) {
         setGameState(prev => ({ ...prev, ...data }));
+        // IMPORTANT: If the room has a hostToken, save it to state so guests can use it
+        if (data.hostToken) {
+            setHostToken(data.hostToken);
+        }
       }
     });
 
     return () => unsubscribe();
   }, [gameState.roomId]);
 
-  // --- SPOTIFY & AUDIO SETUP ---
+  // --- HELPER: AM I HOST? ---
+  const myPlayer = gameState.players.find(p => p.id === currentPlayerId);
+  const isHost = myPlayer?.isHost;
+
+  // --- SPOTIFY TOKEN SHARING (THE HOST PROXY) ---
+  // If I am the host and I have a token, share it to Firebase
+  useEffect(() => {
+      if (isHost && spotifyToken && gameState.roomId && db) {
+          update(ref(db, `rooms/${gameState.roomId}`), { hostToken: spotifyToken });
+      }
+  }, [isHost, spotifyToken, gameState.roomId]);
+
+  // --- SPOTIFY AUTH HANDLING ---
   const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
   const isIP = currentOrigin.match(/\d+\.\d+\.\d+\.\d+/);
   const suggestedRedirectUri = manualRedirectUri || (isIP 
@@ -141,11 +160,14 @@ export default function App() {
       const token = hash.split('&')[0].split('=')[1];
       if (token) {
         setSpotifyConnected(true);
+        setSpotifyToken(token);
+        localStorage.setItem('spotify_access_token', token);
         window.history.replaceState(null, "", window.location.pathname);
       }
     }
   }, []);
 
+  // --- AUDIO LOGIC ---
   const initAudio = () => {
     if (!audioContextRef.current) {
       audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -173,11 +195,9 @@ export default function App() {
     }
   };
 
-  // Trigger announcement on Reveal phase sync
   useEffect(() => {
     if (gameState.phase === GamePhase.REVEAL) {
       const currentSub = gameState.submissions[gameState.currentRevealIndex];
-      // Safety check in case sync is mid-update
       if (!currentSub) return;
       
       const player = gameState.players.find(p => p.id === currentSub.playerId);
@@ -193,7 +213,7 @@ export default function App() {
   }, [spotifyClientId, manualRedirectUri]);
 
 
-  // --- GAME ACTIONS (FIREBASE CONNECTED) ---
+  // --- GAME ACTIONS ---
 
   const syncUpdate = (updates: Partial<GameState>) => {
     if (!db || !gameState.roomId) return;
@@ -207,7 +227,7 @@ export default function App() {
     }
     initAudio();
     
-    const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase(); // Short code: AB12
+    const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
     const hostId = 'p1_host_' + Date.now();
     
     const host: Player = {
@@ -229,10 +249,7 @@ export default function App() {
       currentRevealIndex: 0,
     };
 
-    // Write to Firebase
     await set(ref(db, `rooms/${newRoomId}`), initialGame);
-    
-    // Update Local
     setCurrentPlayerId(hostId);
     sessionStorage.setItem('tune_player_id', hostId);
     setGameState(initialGame);
@@ -259,10 +276,7 @@ export default function App() {
         avatar: `https://picsum.photos/seed/${newPlayerId}/100/100`
       };
 
-      // Check if player already exists
-      const playerExists = game.players.some((p: Player) => p.id === newPlayerId);
-      
-      if (!playerExists) {
+      if (!game.players.some((p: Player) => p.id === newPlayerId)) {
         const updatedPlayers = [...(game.players || []), newPlayer];
         await update(roomRef, { players: updatedPlayers });
       }
@@ -282,15 +296,20 @@ export default function App() {
       return;
     }
     const AUTH_ENDPOINT = "https://accounts.spotify.com/authorize";
-    const scopes = ['user-read-playback-state', 'user-modify-playback-state', 'streaming', 'user-read-currently-playing', 'user-read-email', 'user-read-private'].join(' ');
+    const scopes = [
+        'user-read-playback-state', 
+        'user-modify-playback-state', 
+        'streaming', 
+        'user-read-currently-playing', 
+        'user-read-email', 
+        'user-read-private'
+    ].join(' ');
+    
     const finalUri = suggestedRedirectUri.endsWith('/') ? suggestedRedirectUri : suggestedRedirectUri + '/';
+    
     const authUrl = `${AUTH_ENDPOINT}?client_id=${spotifyClientId}&redirect_uri=${encodeURIComponent(finalUri)}&scope=${encodeURIComponent(scopes)}&response_type=token&show_dialog=true`;
+    
     window.location.href = authUrl;
-  };
-
-  const addSimulatedPlayer = () => {
-     // Debug helper only
-     alert("To test multiplayer, open this site on your phone and join with code: " + gameState.roomId);
   };
 
   const startGame = async () => {
@@ -298,10 +317,19 @@ export default function App() {
       alert("Need at least 2 players to start!");
       return;
     }
-    const aiQuestions = await generateTriviaQuestions(10);
+    
+    // Try to generate AI questions, fallback if it fails
+    let aiQuestions = INITIAL_QUESTIONS;
+    try {
+        const generated = await generateTriviaQuestions(10);
+        if (generated.length > 0) aiQuestions = generated;
+    } catch (e) {
+        console.log("AI Generation failed, using defaults");
+    }
+
     syncUpdate({
         phase: GamePhase.PROMPT,
-        questions: aiQuestions.length > 0 ? aiQuestions : INITIAL_QUESTIONS,
+        questions: aiQuestions,
         currentQuestionIndex: 0
     });
   };
@@ -325,14 +353,9 @@ export default function App() {
     const newSub = { playerId: currentPlayerId, song };
     const currentSubs = gameState.submissions || [];
     
-    // Prevent double submission
     if (currentSubs.find(s => s.playerId === currentPlayerId)) return;
 
     const updatedSubs = [...currentSubs, newSub];
-
-    // Check if everyone (except host if host isn't playing, but simplified here) has submitted
-    // We assume Host plays if they are in the players list. 
-    // If you want Host purely as MC, filter them out here.
     const playingPlayers = gameState.players.filter(p => !p.isHost);
     const hasEveryoneSubmitted = updatedSubs.length >= playingPlayers.length;
 
@@ -343,10 +366,38 @@ export default function App() {
     }
   };
 
+  // --- UPDATED SEARCH LOGIC ---
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     setIsSearching(true);
-    // Use Mock if AI fails or just for speed
+
+    // 1. Try Spotify Search (Using Host Token or Own Token)
+    const tokenToUse = spotifyToken || hostToken;
+
+    if (tokenToUse) {
+        try {
+            const response = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=10`, {
+                headers: { Authorization: `Bearer ${tokenToUse}` }
+            });
+            const data = await response.json();
+            
+            if (data.tracks && data.tracks.items) {
+                const spotifyResults: Song[] = data.tracks.items.map((t: any) => ({
+                    id: t.id,
+                    title: t.name,
+                    artist: t.artists[0].name,
+                    albumArt: t.album.images[0]?.url || 'https://picsum.photos/300/300'
+                }));
+                setSearchResults(spotifyResults);
+                setIsSearching(false);
+                return; // Exit early if Spotify worked
+            }
+        } catch (e) {
+            console.error("Spotify search failed, falling back...", e);
+        }
+    }
+
+    // 2. Fallback to Gemini AI or Mock Data
     const aiMatched = await searchMusicAI(searchQuery);
     const results: Song[] = aiMatched.length > 0 ? aiMatched.map((s, idx) => ({
         id: `ai-${idx}-${Date.now()}`,
@@ -357,6 +408,7 @@ export default function App() {
         s.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
         s.artist.toLowerCase().includes(searchQuery.toLowerCase())
     );
+    
     setSearchResults(results);
     setIsSearching(false);
   };
@@ -367,24 +419,18 @@ export default function App() {
 
   const submitGuess = (submissionId: string, targetPlayerId: string) => {
     if (!currentPlayerId) return;
-    
     const otherGuesses = gameState.guesses ? gameState.guesses.filter(g => !(g.voterId === currentPlayerId && g.submissionId === submissionId)) : [];
     const newGuesses = [...otherGuesses, { voterId: currentPlayerId, submissionId, targetPlayerId }];
-    
     syncUpdate({ guesses: newGuesses });
   };
 
   const finalizeGuesses = () => {
-    // Check if we are Host triggering this or a player just waiting
-    // Logic: If everyone has guessed every song (except their own), move to Reveal
-    // For now, simpler: Host clicks "Reveal Results"
     syncUpdate({ phase: GamePhase.REVEAL });
   };
 
   const nextReveal = () => {
-    const isLast = gameState.currentRevealIndex >= gameState.submissions.length - 1;
+    const isLast = gameState.currentRevealIndex >= (gameState.submissions?.length || 0) - 1;
     if (isLast) {
-      // Calculate Scores
       const updatedPlayers = gameState.players.map(p => {
         const correctGuessesCount = gameState.guesses ? gameState.guesses.filter(g => 
           g.voterId === p.id && 
@@ -392,7 +438,6 @@ export default function App() {
         ).length : 0;
         return { ...p, score: p.score + (correctGuessesCount * 10) };
       });
-      
       syncUpdate({ players: updatedPlayers, phase: GamePhase.SCOREBOARD });
     } else {
       syncUpdate({ currentRevealIndex: gameState.currentRevealIndex + 1 });
@@ -403,7 +448,6 @@ export default function App() {
     setSearchQuery('');
     setSearchResults([]);
     const isGameEnd = gameState.currentQuestionIndex >= 9;
-    
     if (isGameEnd) {
         syncUpdate({ phase: GamePhase.FINAL });
     } else {
@@ -422,10 +466,8 @@ export default function App() {
     alert("Copied to clipboard!");
   };
 
-
   // --- VIEWS ---
 
-  // 1. NOT IN A ROOM (Join/Create)
   if (!gameState.roomId) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4 bg-[#121212] bg-[radial-gradient(circle_at_50%_0%,#1DB9541a_0%,transparent_50%)]">
@@ -441,12 +483,10 @@ export default function App() {
           </div>
           <div className="space-y-4">
             <Button onClick={createRoom} className="w-full py-4 text-lg uppercase tracking-widest">Host a Party</Button>
-            
             <div className="relative py-2">
               <div className="absolute inset-0 flex items-center"><span className="w-full border-t border-[#282828]"></span></div>
               <div className="relative flex justify-center text-xs uppercase font-bold"><span className="bg-[#181818] px-3 text-gray-500">Or Join</span></div>
             </div>
-
             <div className="flex flex-col gap-3">
               <input 
                  type="text" 
@@ -459,13 +499,12 @@ export default function App() {
                 type="text" 
                 value={roomCodeInput}
                 onChange={e => setRoomCodeInput(e.target.value)}
-                placeholder="ROOM CODE (e.g. AB12)" 
+                placeholder="ROOM CODE" 
                 className="w-full bg-[#282828] border-2 border-transparent focus:border-[#1DB954] outline-none rounded-full px-6 py-3 text-center font-black tracking-[0.3em] uppercase text-xl placeholder:tracking-normal placeholder:font-bold"
               />
               <Button variant="outline" onClick={joinRoom}>Join Room</Button>
             </div>
           </div>
-          
           {!db && (
              <div className="p-4 bg-red-900/20 border border-red-500/50 rounded-xl flex items-center gap-2 text-xs text-red-400">
                <AlertCircle size={16} /> 
@@ -477,9 +516,8 @@ export default function App() {
     );
   }
 
-  // 2. LOBBY
+  // LOBBY
   if (gameState.phase === GamePhase.LOBBY) {
-    const amHost = gameState.players.find(p => p.id === currentPlayerId)?.isHost;
     return (
       <div className="min-h-screen bg-[#121212] text-white flex flex-col items-center justify-center p-6">
         <div className="w-full max-w-4xl space-y-12 animate-in slide-in-from-bottom-6 duration-700">
@@ -488,7 +526,6 @@ export default function App() {
                 <h2 className="text-6xl font-black uppercase italic tracking-tighter">Room: {gameState.roomId}</h2>
                 <p className="text-gray-400">Share this code with your friends!</p>
              </div>
-
              <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
                  {gameState.players.map(p => (
                      <div key={p.id} className="bg-[#181818] p-6 rounded-3xl border border-[#282828] flex flex-col items-center gap-4 animate-in zoom-in">
@@ -498,9 +535,8 @@ export default function App() {
                      </div>
                  ))}
              </div>
-
              <div className="flex justify-center pt-8">
-                 {amHost ? (
+                 {isHost ? (
                      <Button onClick={startGame} className="py-6 px-12 text-2xl uppercase tracking-widest">Start the Party</Button>
                  ) : (
                      <div className="flex items-center gap-3 text-[#1DB954] animate-pulse">
@@ -514,54 +550,32 @@ export default function App() {
     );
   }
 
-  // Helpers for logic check
-  const myPlayer = gameState.players.find(p => p.id === currentPlayerId);
-  const isHost = myPlayer?.isHost;
   const hasSubmitted = gameState.submissions?.some(s => s.playerId === currentPlayerId);
-
-  // Voting progress check
   const mysterySubmissions = gameState.submissions?.filter(s => s.playerId !== currentPlayerId) || [];
   const playerGuessesForRound = gameState.guesses?.filter(g => g.voterId === currentPlayerId) || [];
   const allGuessesCompleted = mysterySubmissions.length > 0 && mysterySubmissions.every(s => playerGuessesForRound.some(g => g.submissionId === s.song.id));
 
-  // --- MAIN GAME VIEW ---
   return (
     <div className="min-h-screen bg-[#121212] text-white flex flex-col selection:bg-[#1DB954] selection:text-black">
       <header className="sticky top-0 z-50 bg-[#000000]/90 backdrop-blur-xl border-b border-[#282828] px-4 sm:px-6 py-4 flex justify-between items-center">
         <div className="flex items-center gap-3">
-          <div className="bg-[#1DB954] p-1.5 rounded-full shadow-lg shadow-[#1DB954]/20">
-            <Music size={18} className="text-black" />
-          </div>
-          <div className="hidden sm:block">
-            <span className="font-black text-xl tracking-tight italic">Tune Trivia</span>
-          </div>
-          <div className="flex items-center gap-2">
-             <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
-             <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Online</span>
-          </div>
+          <div className="bg-[#1DB954] p-1.5 rounded-full shadow-lg shadow-[#1DB954]/20"><Music size={18} className="text-black" /></div>
+          <span className="font-black text-xl italic hidden sm:block">Tune Trivia</span>
+          {hostToken && <span className="text-[10px] bg-[#1DB954]/20 text-[#1DB954] px-2 py-1 rounded font-bold uppercase">Spotify Linked</span>}
         </div>
         <div className="flex items-center gap-3 sm:gap-4">
           <div className="px-3 sm:px-4 py-1.5 sm:py-2 bg-[#1DB954]/10 text-[#1DB954] rounded-full text-xs sm:text-sm font-black border border-[#1DB954]/20 flex items-center gap-2">
-            <Users size={14} />
-            {gameState.players.length}
+            <Users size={14} />{gameState.players.length}
           </div>
-          <button onClick={() => setShowSettings(true)} className="p-1.5 text-gray-400 hover:text-white transition-colors">
-            <Settings size={22} />
-          </button>
+          <button onClick={() => setShowSettings(true)} className="p-1.5 text-gray-400 hover:text-white transition-colors"><Settings size={22} /></button>
         </div>
       </header>
 
-      {/* SETTINGS MODAL */}
       {showSettings && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl animate-in fade-in">
           <Card className="max-w-2xl w-full relative space-y-6 overflow-hidden border-[#1DB954]/40">
-            <button onClick={() => setShowSettings(false)} className="absolute top-4 right-4 p-2 text-gray-400 hover:text-white transition-colors">
-              <X size={24} />
-            </button>
-            <div className="flex items-center gap-3 text-[#1DB954]">
-              <Settings size={28} />
-              <h2 className="text-2xl font-black uppercase tracking-tight italic">Dev Dashboard</h2>
-            </div>
+            <button onClick={() => setShowSettings(false)} className="absolute top-4 right-4 p-2 text-gray-400 hover:text-white transition-colors"><X size={24} /></button>
+            <div className="flex items-center gap-3 text-[#1DB954]"><Settings size={28} /><h2 className="text-2xl font-black uppercase tracking-tight italic">Dev Dashboard</h2></div>
             <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
               <div className="p-6 bg-black rounded-3xl border border-[#282828] space-y-5">
                 <div className="flex items-center justify-between">
@@ -577,13 +591,7 @@ export default function App() {
                 </div>
                 <div className="space-y-2">
                   <label className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Client ID</label>
-                  <input 
-                      type="text" 
-                      value={spotifyClientId} 
-                      onChange={(e) => setSpotifyClientId(e.target.value)} 
-                      placeholder="Enter ID or set VITE_SPOTIFY_CLIENT_ID" 
-                      className="w-full bg-[#121212] border border-[#282828] focus:border-[#1DB954] outline-none rounded-xl px-4 py-3 text-sm font-mono text-[#1DB954]" 
-                  />
+                  <input type="text" value={spotifyClientId} onChange={(e) => setSpotifyClientId(e.target.value)} placeholder="Enter ID" className="w-full bg-[#121212] border border-[#282828] focus:border-[#1DB954] outline-none rounded-xl px-4 py-3 text-sm font-mono text-[#1DB954]" />
                 </div>
               </div>
               <div className="flex gap-3">
@@ -597,18 +605,13 @@ export default function App() {
 
       <main className="flex-1 overflow-y-auto p-4 sm:p-8 md:p-12 flex flex-col items-center">
         <div className="w-full max-w-5xl">
-
           {gameState.phase === GamePhase.PROMPT && (
             <div className="text-center space-y-8 sm:space-y-12 animate-in zoom-in-95 duration-500 py-10 sm:py-16">
               <div className="space-y-4 sm:space-y-6 max-w-4xl mx-auto">
                 <p className="text-[#1DB954] font-black tracking-[0.6em] text-xs sm:text-sm uppercase">Round {gameState.currentQuestionIndex + 1}</p>
-                <h2 className="text-4xl sm:text-6xl md:text-8xl font-black leading-tight tracking-tighter italic text-white drop-shadow-[0_10px_40px_rgba(29,185,84,0.3)] px-4">
-                  "{gameState.questions[gameState.currentQuestionIndex]}"
-                </h2>
+                <h2 className="text-4xl sm:text-6xl md:text-8xl font-black leading-tight tracking-tighter italic text-white drop-shadow-[0_10px_40px_rgba(29,185,84,0.3)] px-4">"{gameState.questions[gameState.currentQuestionIndex]}"</h2>
               </div>
-              {isHost && (
-                  <Button onClick={handleNextPrompt} className="py-5 sm:py-6 px-16 sm:px-24 text-2xl sm:text-3xl font-black rounded-full hover:scale-110 uppercase italic tracking-tighter">Open Submissions</Button>
-              )}
+              {isHost && <Button onClick={handleNextPrompt} className="py-5 sm:py-6 px-16 sm:px-24 text-2xl sm:text-3xl font-black rounded-full hover:scale-110 uppercase italic tracking-tighter">Open Submissions</Button>}
               {!isHost && <p className="animate-pulse text-gray-500 font-bold uppercase tracking-widest">Waiting for host...</p>}
             </div>
           )}
@@ -632,45 +635,23 @@ export default function App() {
                         <div className="flex flex-col sm:flex-row items-center gap-3 sm:gap-0 bg-[#242424] border-2 border-transparent focus-within:border-[#1DB954] rounded-[2rem] sm:rounded-full p-2 transition-all shadow-2xl">
                         <div className="flex items-center flex-1 px-4 sm:px-6 w-full">
                             <Search className="text-gray-500 group-focus-within:text-[#1DB954] transition-colors shrink-0" size={24} />
-                            <input 
-                            type="text" 
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                            placeholder="Songs or artists..."
-                            className="w-full bg-transparent outline-none px-4 py-3 sm:py-5 text-lg sm:text-2xl font-bold placeholder:text-gray-700 text-white"
-                            />
+                            <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearch()} placeholder="Songs or artists..." className="w-full bg-transparent outline-none px-4 py-3 sm:py-5 text-lg sm:text-2xl font-bold placeholder:text-gray-700 text-white" />
                         </div>
-                        <button 
-                            onClick={handleSearch}
-                            className="w-full sm:w-auto bg-[#1DB954] text-black font-black px-8 sm:px-12 py-4 rounded-2xl sm:rounded-full hover:scale-105 active:scale-95 transition-all shadow-lg text-lg uppercase whitespace-nowrap"
-                        >
-                            Search
-                        </button>
+                        <button onClick={handleSearch} className="w-full sm:w-auto bg-[#1DB954] text-black font-black px-8 sm:px-12 py-4 rounded-2xl sm:rounded-full hover:scale-105 active:scale-95 transition-all shadow-lg text-lg uppercase whitespace-nowrap">Search</button>
                         </div>
                     </div>
-
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8 max-h-[50vh] overflow-y-auto pr-2 custom-scrollbar">
                         {isSearching ? (
-                        <div className="col-span-full flex flex-col items-center justify-center py-24 gap-6 text-gray-500">
-                            <RefreshCw className="animate-spin text-[#1DB954]" size={64} />
-                            <p className="font-black text-xl animate-pulse tracking-widest uppercase italic">Digging Crates...</p>
-                        </div>
+                        <div className="col-span-full flex flex-col items-center justify-center py-24 gap-6 text-gray-500"><RefreshCw className="animate-spin text-[#1DB954]" size={64} /><p className="font-black text-xl animate-pulse tracking-widest uppercase italic">Digging Crates...</p></div>
                         ) : searchResults.length > 0 ? (
                         searchResults.map((song) => (
                             <div key={song.id} onClick={() => submitSong(song)} className="bg-[#181818] p-5 sm:p-6 rounded-[2.5rem] flex items-center gap-6 hover:bg-[#282828] cursor-pointer group transition-all border border-transparent hover:border-[#1DB954]/40">
                             <img src={song.albumArt} className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl shadow-2xl group-hover:scale-105 transition-transform" />
-                            <div className="flex-1 overflow-hidden">
-                                <h4 className="font-black text-xl sm:text-2xl truncate group-hover:text-[#1DB954] transition-colors tracking-tight leading-none mb-1">{song.title}</h4>
-                                <p className="text-sm sm:text-lg text-gray-500 font-bold truncate italic">{song.artist}</p>
-                            </div>
+                            <div className="flex-1 overflow-hidden"><h4 className="font-black text-xl sm:text-2xl truncate group-hover:text-[#1DB954] transition-colors tracking-tight leading-none mb-1">{song.title}</h4><p className="text-sm sm:text-lg text-gray-500 font-bold truncate italic">{song.artist}</p></div>
                             </div>
                         ))
                         ) : (
-                        <div className="col-span-full text-center py-24 text-gray-800 bg-[#181818]/30 rounded-[4rem] border-2 border-dashed border-[#282828]">
-                            <Music size={100} className="mx-auto mb-8 opacity-5" />
-                            <p className="text-3xl font-black uppercase tracking-tighter opacity-20 italic px-4">Find the perfect sound</p>
-                        </div>
+                        <div className="col-span-full text-center py-24 text-gray-800 bg-[#181818]/30 rounded-[4rem] border-2 border-dashed border-[#282828]"><Music size={100} className="mx-auto mb-8 opacity-5" /><p className="text-3xl font-black uppercase tracking-tighter opacity-20 italic px-4">Find the perfect sound</p></div>
                         )}
                     </div>
                   </>
@@ -681,32 +662,19 @@ export default function App() {
           {gameState.phase === GamePhase.LISTENING && (
             <div className="space-y-12 animate-in slide-in-from-right duration-700 py-10">
               <div className="text-center space-y-6">
-                <div className="inline-flex items-center gap-4 bg-[#1DB954]/10 px-8 py-3 rounded-full border border-[#1DB954]/20">
-                  <Headphones size={20} className="text-[#1DB954]" />
-                  <span className="font-black uppercase tracking-[0.5em] text-xs">The Listening Lounge</span>
-                </div>
+                <div className="inline-flex items-center gap-4 bg-[#1DB954]/10 px-8 py-3 rounded-full border border-[#1DB954]/20"><Headphones size={20} className="text-[#1DB954]" /><span className="font-black uppercase tracking-[0.5em] text-xs">The Listening Lounge</span></div>
                 <h2 className="text-5xl sm:text-7xl font-black tracking-tighter uppercase italic leading-none">Party Mix</h2>
-                <p className="text-gray-500 text-xl font-bold italic">Listen closely... who picked these vibes?</p>
               </div>
-
               <div className="relative max-w-4xl mx-auto">
                 <div className="bg-[#181818] border border-[#282828] rounded-[4rem] p-10 sm:p-16 flex flex-col md:flex-row items-center gap-12 shadow-[0_40px_100px_rgba(0,0,0,0.8)] relative overflow-hidden group">
                   <div className="absolute inset-0 bg-gradient-to-br from-[#1DB954]/5 to-transparent opacity-50"></div>
-                  
-                  {/* Vinyl Record Animation */}
                   <div className="relative shrink-0">
                     <div className="w-48 h-48 sm:w-64 sm:h-64 rounded-full bg-black border-[10px] border-[#181818] shadow-2xl relative flex items-center justify-center animate-[spin_6s_linear_infinite]">
                       <div className="absolute inset-4 rounded-full border-2 border-white/5"></div>
                       <div className="absolute inset-10 rounded-full border-2 border-white/5"></div>
-                      {gameState.submissions[listeningIndex] && (
-                        <img 
-                            src={gameState.submissions[listeningIndex].song.albumArt} 
-                            className="w-20 h-20 sm:w-32 sm:h-32 rounded-full border-4 border-black" 
-                        />
-                      )}
+                      {gameState.submissions[listeningIndex] && <img src={gameState.submissions[listeningIndex].song.albumArt} className="w-20 h-20 sm:w-32 sm:h-32 rounded-full border-4 border-black" />}
                     </div>
                   </div>
-
                   <div className="flex-1 text-center md:text-left space-y-4 relative z-10">
                     {gameState.submissions[listeningIndex] && (
                         <>
@@ -717,36 +685,14 @@ export default function App() {
                     )}
                   </div>
                 </div>
-
-                {/* Only Host controls playback */}
                 {isHost ? (
                     <div className="flex justify-between items-center mt-12 gap-8 px-4">
-                    <button 
-                        onClick={() => setListeningIndex(prev => Math.max(0, prev - 1))}
-                        disabled={listeningIndex === 0}
-                        className="p-6 bg-[#282828] hover:bg-[#3e3e3e] rounded-full text-white disabled:opacity-20 transition-all"
-                    >
-                        <ChevronRight size={32} className="rotate-180" />
-                    </button>
-                    
-                    {listeningIndex < gameState.submissions.length - 1 ? (
-                        <Button onClick={() => setListeningIndex(prev => prev + 1)} className="flex-1 py-6 text-2xl">Next Track</Button>
-                    ) : (
-                        <Button onClick={startVoting} className="flex-1 py-6 text-2xl uppercase italic tracking-tighter animate-pulse">Start Matching</Button>
-                    )}
-
-                    <button 
-                        onClick={() => setListeningIndex(prev => Math.min(gameState.submissions.length - 1, prev + 1))}
-                        disabled={listeningIndex === gameState.submissions.length - 1}
-                        className="p-6 bg-[#282828] hover:bg-[#3e3e3e] rounded-full text-white disabled:opacity-20 transition-all"
-                    >
-                        <ChevronRight size={32} />
-                    </button>
+                    <button onClick={() => setListeningIndex(prev => Math.max(0, prev - 1))} disabled={listeningIndex === 0} className="p-6 bg-[#282828] hover:bg-[#3e3e3e] rounded-full text-white disabled:opacity-20 transition-all"><ChevronRight size={32} className="rotate-180" /></button>
+                    {listeningIndex < gameState.submissions.length - 1 ? <Button onClick={() => setListeningIndex(prev => prev + 1)} className="flex-1 py-6 text-2xl">Next Track</Button> : <Button onClick={startVoting} className="flex-1 py-6 text-2xl uppercase italic tracking-tighter animate-pulse">Start Matching</Button>}
+                    <button onClick={() => setListeningIndex(prev => Math.min(gameState.submissions.length - 1, prev + 1))} disabled={listeningIndex === gameState.submissions.length - 1} className="p-6 bg-[#282828] hover:bg-[#3e3e3e] rounded-full text-white disabled:opacity-20 transition-all"><ChevronRight size={32} /></button>
                     </div>
                 ) : (
-                    <div className="text-center mt-8 text-gray-500 font-bold uppercase tracking-widest animate-pulse">
-                        Host is controlling playback...
-                    </div>
+                    <div className="text-center mt-8 text-gray-500 font-bold uppercase tracking-widest animate-pulse">Host is controlling playback...</div>
                 )}
               </div>
             </div>
@@ -762,31 +708,20 @@ export default function App() {
                 {gameState.submissions.map((sub) => {
                   if (sub.playerId === currentPlayerId) return null; 
                   const currentGuess = gameState.guesses ? gameState.guesses.find(g => g.voterId === currentPlayerId && g.submissionId === sub.song.id) : null;
-                  
                   return (
                     <div key={sub.song.id} className={`bg-[#181818] border rounded-[2.5rem] overflow-hidden flex flex-col sm:flex-row shadow-2xl transition-all group ${currentGuess ? 'border-[#1DB954]/40 bg-[#1DB954]/5' : 'border-[#282828]'}`}>
                       <div className="w-full sm:w-48 h-48 sm:h-auto bg-[#282828] flex-shrink-0 relative overflow-hidden">
                         <img src={sub.song.albumArt} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-1000" />
                       </div>
                       <div className="flex-1 p-6 sm:p-8 flex flex-col justify-between">
-                        <div>
-                          <h4 className="text-2xl sm:text-3xl font-black mb-1 leading-tight tracking-tight">{sub.song.title}</h4>
-                          <p className="text-lg sm:text-xl text-gray-500 font-bold mb-6 italic">{sub.song.artist}</p>
-                        </div>
+                        <div><h4 className="text-2xl sm:text-3xl font-black mb-1 leading-tight tracking-tight">{sub.song.title}</h4><p className="text-lg sm:text-xl text-gray-500 font-bold mb-6 italic">{sub.song.artist}</p></div>
                         <div className="space-y-4">
                           <p className="text-[10px] font-black uppercase tracking-[0.5em] text-[#1DB954]">Pick a Player</p>
                           <div className="flex flex-wrap gap-2">
                             {gameState.players.filter(p => p.id !== currentPlayerId && !p.isHost).map(p => {
                               const isSelected = currentGuess?.targetPlayerId === p.id;
                               return (
-                                <button 
-                                  key={p.id} 
-                                  onClick={() => submitGuess(sub.song.id, p.id)} 
-                                  className={`px-4 py-2 rounded-full text-xs font-black border transition-all flex items-center gap-2 ${isSelected ? 'bg-[#1DB954] border-transparent text-black' : 'border-[#3e3e3e] hover:border-[#1DB954] hover:bg-[#1DB954]/10'}`}
-                                >
-                                  {isSelected && <Check size={14} />}
-                                  {p.name}
-                                </button>
+                                <button key={p.id} onClick={() => submitGuess(sub.song.id, p.id)} className={`px-4 py-2 rounded-full text-xs font-black border transition-all flex items-center gap-2 ${isSelected ? 'bg-[#1DB954] border-transparent text-black' : 'border-[#3e3e3e] hover:border-[#1DB954] hover:bg-[#1DB954]/10'}`}>{isSelected && <Check size={14} />}{p.name}</button>
                               );
                             })}
                           </div>
@@ -796,13 +731,8 @@ export default function App() {
                   );
                 })}
               </div>
-
               <div className="flex justify-center pt-12">
-                 {isHost ? (
-                    <Button onClick={finalizeGuesses} className="w-full md:w-[32rem] py-8 text-3xl font-black rounded-full uppercase italic tracking-tighter">Reveal Results</Button>
-                 ) : (
-                    <p className="text-gray-500 font-bold uppercase tracking-widest animate-pulse">{allGuessesCompleted ? "Waiting for host to reveal..." : "Cast your votes!"}</p>
-                 )}
+                 {isHost ? <Button onClick={finalizeGuesses} className="w-full md:w-[32rem] py-8 text-3xl font-black rounded-full uppercase italic tracking-tighter">Reveal Results</Button> : <p className="text-gray-500 font-bold uppercase tracking-widest animate-pulse">{allGuessesCompleted ? "Waiting for host to reveal..." : "Cast your votes!"}</p>}
               </div>
             </div>
           )}
@@ -810,7 +740,6 @@ export default function App() {
           {gameState.phase === GamePhase.REVEAL && (() => {
             const currentSub = gameState.submissions[gameState.currentRevealIndex];
             if (!currentSub) return <div>Loading reveal...</div>;
-
             const owner = gameState.players.find(p => p.id === currentSub.playerId);
             const allGuesses = gameState.guesses || [];
             const guessesForSub = allGuesses.filter(g => g.submissionId === currentSub.song.id);
@@ -819,100 +748,36 @@ export default function App() {
 
             return (
               <div className="space-y-16 py-10 animate-in fade-in duration-1000">
-                {/* Song Hero Section */}
                 <div className="text-center space-y-10 px-4">
-                  <div className="inline-flex items-center gap-4 bg-[#1DB954]/10 px-8 py-3 rounded-full border border-[#1DB954]/20">
-                    <span className="font-black uppercase tracking-[0.5em] text-xs">Reveal #{gameState.currentRevealIndex + 1}</span>
-                  </div>
+                  <div className="inline-flex items-center gap-4 bg-[#1DB954]/10 px-8 py-3 rounded-full border border-[#1DB954]/20"><span className="font-black uppercase tracking-[0.5em] text-xs">Reveal #{gameState.currentRevealIndex + 1}</span></div>
                   <div className="flex flex-col items-center">
                     <div className="relative group mb-10">
                       <div className="absolute inset-0 bg-[#1DB954] blur-[80px] opacity-20 rounded-full animate-pulse"></div>
-                      <img 
-                        src={currentSub.song.albumArt} 
-                        className="w-48 h-48 sm:w-64 sm:h-64 rounded-[2.5rem] shadow-2xl border-[10px] border-[#181818] relative z-10" 
-                      />
+                      <img src={currentSub.song.albumArt} className="w-48 h-48 sm:w-64 sm:h-64 rounded-[2.5rem] shadow-2xl border-[10px] border-[#181818] relative z-10" />
                     </div>
-                    <h2 className="text-4xl sm:text-7xl font-black leading-tight tracking-tighter text-white italic drop-shadow-2xl">
-                      "{currentSub.song.title}"
-                    </h2>
+                    <h2 className="text-4xl sm:text-7xl font-black leading-tight tracking-tighter text-white italic drop-shadow-2xl">"{currentSub.song.title}"</h2>
                     <p className="text-2xl sm:text-4xl text-gray-500 font-black italic tracking-tighter">— {currentSub.song.artist}</p>
                   </div>
                 </div>
-
-                {/* The Reveal Grid */}
                 <div className="grid lg:grid-cols-3 gap-8 items-start">
-                  
-                  {/* Correct Guessers */}
                   <div className="space-y-6 animate-in slide-in-from-left delay-300 duration-700">
-                    <div className="flex items-center gap-3 px-6 text-[#1DB954]">
-                      <Eye size={22} />
-                      <h4 className="font-black uppercase tracking-widest text-sm">Correct Detectives (+10 pts)</h4>
-                    </div>
-                    <div className="grid gap-3">
-                      {correctDetectives.length > 0 ? correctDetectives.map(g => {
-                        const player = gameState.players.find(p => p.id === g.voterId);
-                        return (
-                          <div key={g.voterId} className="bg-[#1DB954]/10 border border-[#1DB954]/30 p-4 rounded-2xl flex items-center gap-4 animate-in zoom-in">
-                            <img src={player?.avatar} className="w-10 h-10 rounded-full border-2 border-[#1DB954]" />
-                            <span className="font-bold text-lg">{player?.name}</span>
-                            <Check className="ml-auto text-[#1DB954]" size={20} />
-                          </div>
-                        );
-                      }) : (
-                        <div className="bg-[#181818] border border-[#282828] p-6 rounded-2xl text-center text-gray-600 font-bold italic">No one spotted it!</div>
-                      )}
-                    </div>
+                    <div className="flex items-center gap-3 px-6 text-[#1DB954]"><Eye size={22} /><h4 className="font-black uppercase tracking-widest text-sm">Correct Detectives (+10 pts)</h4></div>
+                    <div className="grid gap-3">{correctDetectives.length > 0 ? correctDetectives.map(g => { const player = gameState.players.find(p => p.id === g.voterId); return (<div key={g.voterId} className="bg-[#1DB954]/10 border border-[#1DB954]/30 p-4 rounded-2xl flex items-center gap-4 animate-in zoom-in"><img src={player?.avatar} className="w-10 h-10 rounded-full border-2 border-[#1DB954]" /><span className="font-bold text-lg">{player?.name}</span><Check className="ml-auto text-[#1DB954]" size={20} /></div>); }) : <div className="bg-[#181818] border border-[#282828] p-6 rounded-2xl text-center text-gray-600 font-bold italic">No one spotted it!</div>}</div>
                   </div>
-
-                  {/* The Mastermind */}
                   <div className="bg-[#1DB954] text-black p-10 rounded-[3rem] shadow-[0_0_100px_rgba(29,185,84,0.3)] text-center space-y-6 order-first lg:order-none animate-in zoom-in duration-500">
                     <p className="font-black uppercase tracking-[0.3em] text-xs">The Choice Of</p>
                     <div className="relative inline-block">
-                      <img 
-                        src={owner?.avatar} 
-                        className="w-40 h-40 rounded-full border-[12px] border-black/10 shadow-xl mx-auto" 
-                      />
-                      <div className="absolute -bottom-4 -right-4 bg-black text-white p-4 rounded-full shadow-2xl scale-125">
-                         <Disc className="animate-spin" size={24} />
-                      </div>
+                      <img src={owner?.avatar} className="w-40 h-40 rounded-full border-[12px] border-black/10 shadow-xl mx-auto" />
+                      <div className="absolute -bottom-4 -right-4 bg-black text-white p-4 rounded-full shadow-2xl scale-125"><Disc className="animate-spin" size={24} /></div>
                     </div>
                     <h3 className="text-4xl sm:text-6xl font-black tracking-tighter uppercase italic">{owner?.name}</h3>
                   </div>
-
-                  {/* Incorrect Guessers */}
                   <div className="space-y-6 animate-in slide-in-from-right delay-300 duration-700">
-                    <div className="flex items-center gap-3 px-6 text-red-500">
-                      <XCircle size={22} />
-                      <h4 className="font-black uppercase tracking-widest text-sm">Bamboozled Players</h4>
-                    </div>
-                    <div className="grid gap-3">
-                      {bamboozled.length > 0 ? bamboozled.map(g => {
-                        const player = gameState.players.find(p => p.id === g.voterId);
-                        const mistakenIdentity = gameState.players.find(p => p.id === g.targetPlayerId);
-                        return (
-                          <div key={g.voterId} className="bg-red-500/5 border border-red-500/20 p-4 rounded-2xl flex items-center gap-4 animate-in zoom-in">
-                            <img src={player?.avatar} className="w-10 h-10 rounded-full border-2 border-red-500/30 opacity-50" />
-                            <div className="flex flex-col">
-                              <span className="font-bold">{player?.name}</span>
-                              <span className="text-[10px] uppercase font-black text-gray-500">Guessed {mistakenIdentity?.name}</span>
-                            </div>
-                          </div>
-                        );
-                      }) : (
-                        <div className="bg-[#181818] border border-[#282828] p-6 rounded-2xl text-center text-gray-600 font-bold italic">Everyone knew it!</div>
-                      )}
-                    </div>
+                    <div className="flex items-center gap-3 px-6 text-red-500"><XCircle size={22} /><h4 className="font-black uppercase tracking-widest text-sm">Bamboozled Players</h4></div>
+                    <div className="grid gap-3">{bamboozled.length > 0 ? bamboozled.map(g => { const player = gameState.players.find(p => p.id === g.voterId); const mistakenIdentity = gameState.players.find(p => p.id === g.targetPlayerId); return (<div key={g.voterId} className="bg-red-500/5 border border-red-500/20 p-4 rounded-2xl flex items-center gap-4 animate-in zoom-in"><img src={player?.avatar} className="w-10 h-10 rounded-full border-2 border-red-500/30 opacity-50" /><div className="flex flex-col"><span className="font-bold">{player?.name}</span><span className="text-[10px] uppercase font-black text-gray-500">Guessed {mistakenIdentity?.name}</span></div></div>); }) : <div className="bg-[#181818] border border-[#282828] p-6 rounded-2xl text-center text-gray-600 font-bold italic">Everyone knew it!</div>}</div>
                   </div>
                 </div>
-
-                {isHost && (
-                    <div className="flex justify-center pt-10">
-                    <Button onClick={nextReveal} className="px-32 py-8 text-3xl font-black rounded-full bg-white text-black hover:bg-gray-100 transition-all hover:scale-105 shadow-2xl uppercase italic tracking-tighter">
-                        {gameState.currentRevealIndex < gameState.submissions.length - 1 ? 'NEXT REVEAL' : 'FINAL SCORES'} 
-                        <ChevronRight size={48} className="inline-block ml-4" />
-                    </Button>
-                    </div>
-                )}
+                {isHost && <div className="flex justify-center pt-10"><Button onClick={nextReveal} className="px-32 py-8 text-3xl font-black rounded-full bg-white text-black hover:bg-gray-100 transition-all hover:scale-105 shadow-2xl uppercase italic tracking-tighter">{gameState.currentRevealIndex < gameState.submissions.length - 1 ? 'NEXT REVEAL' : 'FINAL SCORES'} <ChevronRight size={48} className="inline-block ml-4" /></Button></div>}
               </div>
             );
           })()}
@@ -937,13 +802,7 @@ export default function App() {
                   ))}
                 </div>
               </Card>
-              {isHost && (
-                <div className="flex justify-center pt-8 sm:pt-16">
-                    <Button onClick={nextQuestion} className="w-full md:w-[40rem] py-6 sm:py-8 text-2xl sm:text-4xl font-black rounded-full bg-white text-black shadow-2xl uppercase italic tracking-tighter">
-                    {gameState.currentQuestionIndex < 9 ? 'Next Round' : 'Finale'}
-                    </Button>
-                </div>
-              )}
+              {isHost && <div className="flex justify-center pt-8 sm:pt-16"><Button onClick={nextQuestion} className="w-full md:w-[40rem] py-6 sm:py-8 text-2xl sm:text-4xl font-black rounded-full bg-white text-black shadow-2xl uppercase italic tracking-tighter">{gameState.currentQuestionIndex < 9 ? 'Next Round' : 'Finale'}</Button></div>}
             </div>
           )}
 
@@ -968,35 +827,6 @@ export default function App() {
           )}
         </div>
       </main>
-
-      {gameState.phase !== GamePhase.LOBBY && (
-        <footer className="p-6 sm:p-10 border-t border-[#282828] bg-[#000000] flex items-center justify-between px-6 sm:px-16 relative z-50">
-          <div className="flex items-center gap-4 sm:gap-8 w-1/3">
-             <div className="w-12 h-12 sm:w-20 sm:h-20 bg-[#1DB954]/20 rounded-xl flex items-center justify-center border border-white/10 relative overflow-hidden group">
-                <Music size={24} className="text-[#1DB954] sm:size-[36px]" />
-             </div>
-             <div className="hidden xl:block overflow-hidden">
-               <p className="font-black text-xl truncate tracking-tight uppercase italic text-white">Tune Trivia Party</p>
-               <p className="text-xs text-[#1DB954] font-black uppercase tracking-[0.3em] mt-1 opacity-80">Room: {gameState.roomId}</p>
-             </div>
-          </div>
-          <div className="flex flex-col items-center gap-2 sm:gap-4 w-1/3">
-             <p className="text-xs sm:text-lg font-black uppercase tracking-[0.4em] text-[#1DB954] animate-pulse italic text-center">Round {gameState.currentQuestionIndex + 1}</p>
-             <div className="w-full max-md:hidden max-w-md h-1 sm:h-1.5 bg-gray-900 rounded-full overflow-hidden">
-                <div className="h-full bg-[#1DB954] transition-all duration-1000" style={{ width: `${((gameState.currentQuestionIndex + 1) / 10) * 100}%` }}></div>
-             </div>
-          </div>
-          <div className="flex justify-end w-1/3 items-center gap-4 sm:gap-8 text-gray-500">
-             <button onClick={() => setShowSettings(true)} className="hover:text-[#1DB954] transition-all hover:scale-110">
-              <Settings size={24} className="sm:size-[32px]" />
-             </button>
-             <div className="hidden sm:flex items-center gap-3 bg-[#1DB954]/10 px-4 py-2 rounded-full border border-[#1DB954]/20">
-                <div className="w-2.5 h-2.5 bg-green-500 rounded-full animate-pulse"></div>
-                <span className="text-[10px] font-black uppercase tracking-widest text-[#1DB954]">ONLINE</span>
-             </div>
-          </div>
-        </footer>
-      )}
     </div>
   );
 }
