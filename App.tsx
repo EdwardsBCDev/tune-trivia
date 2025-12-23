@@ -72,15 +72,13 @@ const Card: React.FC<{ children: React.ReactNode; className?: string }> = ({ chi
 
 export default function App() {
   // --- STATE ---
-  
-  // Local UI State
   const [roomCodeInput, setRoomCodeInput] = useState('');
   const [currentPlayerId, setCurrentPlayerId] = useState<string | null>(() => sessionStorage.getItem('tune_player_id'));
   const [playerName, setPlayerName] = useState(() => sessionStorage.getItem('tune_player_name') || '');
   
-  // Game State (Synced)
+  // Game State
   const [gameState, setGameState] = useState<GameState>({
-    roomId: '', // Starts empty, filled by Create or Join
+    roomId: '', 
     phase: GamePhase.LOBBY,
     currentQuestionIndex: 0,
     questions: INITIAL_QUESTIONS,
@@ -94,17 +92,13 @@ export default function App() {
   const [searchResults, setSearchResults] = useState<Song[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isAnnouncing, setIsAnnouncing] = useState(false);
-  
-  // Listening Phase State
   const [listeningIndex, setListeningIndex] = useState(0);
-
-  // Spotify Integration State
-  const [spotifyConnected, setSpotifyConnected] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   
-  // Tokens
+  // Spotify Tokens
   const [spotifyToken, setSpotifyToken] = useState<string | null>(() => localStorage.getItem('spotify_access_token'));
-  const [hostToken, setHostToken] = useState<string | null>(null); // Token shared by host via Firebase
+  const [hostToken, setHostToken] = useState<string | null>(null); 
 
   const [spotifyClientId, setSpotifyClientId] = useState(() => 
     import.meta.env.VITE_SPOTIFY_CLIENT_ID || localStorage.getItem('spotify_client_id') || ''
@@ -114,40 +108,35 @@ export default function App() {
   
   const audioContextRef = useRef<AudioContext | null>(null);
 
-  // --- FIREBASE SYNC EFFECT ---
+  // --- FIREBASE SYNC ---
   useEffect(() => {
     if (!gameState.roomId || !db) return;
 
     const roomRef = ref(db, `rooms/${gameState.roomId}`);
     
-    // Listen for changes
     const unsubscribe = onValue(roomRef, (snapshot) => {
       const data = snapshot.val();
       if (data) {
         setGameState(prev => ({ ...prev, ...data }));
-        // IMPORTANT: If the room has a hostToken, save it to state so guests can use it
-        if (data.hostToken) {
-            setHostToken(data.hostToken);
-        }
+        if (data.hostToken) setHostToken(data.hostToken);
       }
     });
 
     return () => unsubscribe();
   }, [gameState.roomId]);
 
-  // --- HELPER: AM I HOST? ---
+  // --- HOST PROXY LOGIC ---
   const myPlayer = gameState.players.find(p => p.id === currentPlayerId);
   const isHost = myPlayer?.isHost;
 
-  // --- SPOTIFY TOKEN SHARING (THE HOST PROXY) ---
-  // If I am the host and I have a token, share it to Firebase
   useEffect(() => {
+      // If I am the host and I have a token, write it to Firebase so guests can use it
       if (isHost && spotifyToken && gameState.roomId && db) {
           update(ref(db, `rooms/${gameState.roomId}`), { hostToken: spotifyToken });
       }
   }, [isHost, spotifyToken, gameState.roomId]);
 
-  // --- SPOTIFY AUTH HANDLING ---
+  // --- SPOTIFY AUTH ---
   const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
   const isIP = currentOrigin.match(/\d+\.\d+\.\d+\.\d+/);
   const suggestedRedirectUri = manualRedirectUri || (isIP 
@@ -167,7 +156,7 @@ export default function App() {
     }
   }, []);
 
-  // --- AUDIO LOGIC ---
+  // --- AUDIO ---
   const initAudio = () => {
     if (!audioContextRef.current) {
       audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -222,7 +211,7 @@ export default function App() {
 
   const createRoom = async () => {
     if (!db) { 
-        alert("Firebase not connected! Please check your Coolify Environment Variables."); 
+        alert("Firebase not connected! Check Coolify Environment Variables."); 
         return; 
     }
     initAudio();
@@ -295,6 +284,7 @@ export default function App() {
       setShowSettings(true);
       return;
     }
+    // REAL SPOTIFY URL
     const AUTH_ENDPOINT = "https://accounts.spotify.com/authorize";
     const scopes = [
         'user-read-playback-state', 
@@ -317,8 +307,6 @@ export default function App() {
       alert("Need at least 2 players to start!");
       return;
     }
-    
-    // Try to generate AI questions, fallback if it fails
     let aiQuestions = INITIAL_QUESTIONS;
     try {
         const generated = await generateTriviaQuestions(10);
@@ -337,6 +325,7 @@ export default function App() {
   const handleNextPrompt = () => {
     setSearchQuery('');
     setSearchResults([]);
+    setSearchError(null);
     syncUpdate({
       phase: GamePhase.SUBMITTING,
       submissions: [],
@@ -349,6 +338,7 @@ export default function App() {
     if (!currentPlayerId) return;
     setSearchQuery('');
     setSearchResults([]);
+    setSearchError(null);
 
     const newSub = { playerId: currentPlayerId, song };
     const currentSubs = gameState.submissions || [];
@@ -366,19 +356,28 @@ export default function App() {
     }
   };
 
-  // --- UPDATED SEARCH LOGIC ---
+  // --- UPDATED SEARCH LOGIC (FIXED) ---
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     setIsSearching(true);
+    setSearchError(null);
 
     // 1. Try Spotify Search (Using Host Token or Own Token)
     const tokenToUse = spotifyToken || hostToken;
 
     if (tokenToUse) {
         try {
+            // REAL SPOTIFY API URL
             const response = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=10`, {
                 headers: { Authorization: `Bearer ${tokenToUse}` }
             });
+            
+            if (response.status === 401) {
+                // Token expired
+                setSearchError("Host Spotify token expired. Host needs to reconnect.");
+                throw new Error("Token expired");
+            }
+
             const data = await response.json();
             
             if (data.tracks && data.tracks.items) {
@@ -395,9 +394,12 @@ export default function App() {
         } catch (e) {
             console.error("Spotify search failed, falling back...", e);
         }
+    } else {
+        console.warn("No Spotify token available (neither own nor host)");
     }
 
     // 2. Fallback to Gemini AI or Mock Data
+    // We only use this if Spotify fails or no token is found
     const aiMatched = await searchMusicAI(searchQuery);
     const results: Song[] = aiMatched.length > 0 ? aiMatched.map((s, idx) => ({
         id: `ai-${idx}-${Date.now()}`,
@@ -413,10 +415,8 @@ export default function App() {
     setIsSearching(false);
   };
 
-  const startVoting = () => {
-    syncUpdate({ phase: GamePhase.VOTING });
-  };
-
+  const startVoting = () => syncUpdate({ phase: GamePhase.VOTING });
+  
   const submitGuess = (submissionId: string, targetPlayerId: string) => {
     if (!currentPlayerId) return;
     const otherGuesses = gameState.guesses ? gameState.guesses.filter(g => !(g.voterId === currentPlayerId && g.submissionId === submissionId)) : [];
@@ -424,9 +424,7 @@ export default function App() {
     syncUpdate({ guesses: newGuesses });
   };
 
-  const finalizeGuesses = () => {
-    syncUpdate({ phase: GamePhase.REVEAL });
-  };
+  const finalizeGuesses = () => syncUpdate({ phase: GamePhase.REVEAL });
 
   const nextReveal = () => {
     const isLast = gameState.currentRevealIndex >= (gameState.submissions?.length || 0) - 1;
@@ -516,7 +514,6 @@ export default function App() {
     );
   }
 
-  // LOBBY
   if (gameState.phase === GamePhase.LOBBY) {
     return (
       <div className="min-h-screen bg-[#121212] text-white flex flex-col items-center justify-center p-6">
@@ -640,6 +637,13 @@ export default function App() {
                         <button onClick={handleSearch} className="w-full sm:w-auto bg-[#1DB954] text-black font-black px-8 sm:px-12 py-4 rounded-2xl sm:rounded-full hover:scale-105 active:scale-95 transition-all shadow-lg text-lg uppercase whitespace-nowrap">Search</button>
                         </div>
                     </div>
+                    
+                    {searchError && (
+                        <div className="text-center p-4 bg-red-900/20 text-red-400 rounded-xl border border-red-500/50">
+                            {searchError}
+                        </div>
+                    )}
+
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8 max-h-[50vh] overflow-y-auto pr-2 custom-scrollbar">
                         {isSearching ? (
                         <div className="col-span-full flex flex-col items-center justify-center py-24 gap-6 text-gray-500"><RefreshCw className="animate-spin text-[#1DB954]" size={64} /><p className="font-black text-xl animate-pulse tracking-widest uppercase italic">Digging Crates...</p></div>
@@ -822,6 +826,7 @@ export default function App() {
               </div>
               <div className="flex flex-col sm:flex-row gap-8 sm:gap-12 justify-center pt-12 sm:pt-24 px-4">
                 <Button onClick={() => window.location.reload()} variant="primary" className="px-16 sm:px-32 py-8 text-3xl sm:text-5xl font-black uppercase italic">New Session</Button>
+                <Button variant="outline" onClick={() => window.location.reload()} className="px-12 text-2xl uppercase tracking-widest font-black">Quit Game</Button>
               </div>
             </div>
           )}
