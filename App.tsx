@@ -69,7 +69,6 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Song[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [isAnnouncing, setIsAnnouncing] = useState(false);
   const [listeningIndex, setListeningIndex] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -80,7 +79,7 @@ export default function App() {
   const [spotifyClientId, setSpotifyClientId] = useState(() => import.meta.env.VITE_SPOTIFY_CLIENT_ID || localStorage.getItem('spotify_client_id') || '');
   const [manualRedirectUri, setManualRedirectUri] = useState(() => localStorage.getItem('spotify_redirect_uri_override') || '');
 
-  // Game State (Safely initialized)
+  // Game State
   const [gameState, setGameState] = useState<GameState>({
     roomId: '', 
     phase: GamePhase.LOBBY,
@@ -91,8 +90,6 @@ export default function App() {
     guesses: [],
     currentRevealIndex: 0,
   });
-
-  const audioContextRef = useRef<AudioContext | null>(null);
 
   // --- FIREBASE SYNC ---
   useEffect(() => {
@@ -117,16 +114,16 @@ export default function App() {
 
   const isHost = gameState.players.find(p => p.id === currentPlayerId)?.isHost;
 
-  // Host shares token
+  // Host shares token to Firebase
   useEffect(() => {
       if (isHost && spotifyToken && gameState.roomId && db) {
           update(ref(db, `rooms/${gameState.roomId}`), { hostToken: spotifyToken });
       }
   }, [isHost, spotifyToken, gameState.roomId]);
 
-  // --- SPOTIFY AUTH ---
+  // --- SPOTIFY AUTH HANDLING ---
   const currentOrigin = window.location.origin;
-  const suggestedRedirectUri = manualRedirectUri || (currentOrigin.includes('nip.io') ? currentOrigin + '/' : currentOrigin.replace(/(\d+\.\d+\.\d+\.\d+)/, '$1.nip.io') + '/');
+  const suggestedRedirectUri = manualRedirectUri || (currentOrigin.includes('nip.io') ? currentOrigin + '/' : currentOrigin + '/');
 
   useEffect(() => {
     const hash = window.location.hash;
@@ -142,14 +139,13 @@ export default function App() {
 
   const connectSpotify = () => {
     if (!spotifyClientId) { setShowSettings(true); return; }
-    // ACTUAL OFFICIAL ENDPOINT
     const AUTH_ENDPOINT = "https://accounts.spotify.com/authorize";
-    const scopes = ['user-read-playback-state', 'user-modify-playback-state', 'streaming', 'user-read-private'].join(' ');
+    const scopes = ['user-read-private', 'user-read-email'].join(' ');
     const finalUri = suggestedRedirectUri.endsWith('/') ? suggestedRedirectUri : suggestedRedirectUri + '/';
     window.location.href = `${AUTH_ENDPOINT}?client_id=${spotifyClientId}&redirect_uri=${encodeURIComponent(finalUri)}&scope=${encodeURIComponent(scopes)}&response_type=token&show_dialog=true`;
   };
 
-  // --- SEARCH LOGIC ---
+  // --- SEARCH LOGIC (FIXED ENDPOINT) ---
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
     setIsSearching(true);
@@ -159,13 +155,12 @@ export default function App() {
 
     if (activeToken) {
         try {
-            // ACTUAL OFFICIAL SEARCH API
             const response = await fetch(`https://api.spotify.com/v1/search?q=${encodeURIComponent(searchQuery)}&type=track&limit=10`, {
                 headers: { Authorization: `Bearer ${activeToken}` }
             });
             
             if (response.status === 401) {
-                setSearchError("Host Spotify connection expired. Reconnect in Settings.");
+                setSearchError("Spotify session expired. Host needs to Re-sync.");
             } else {
                 const data = await response.json();
                 if (data.tracks) {
@@ -179,19 +174,17 @@ export default function App() {
                     return;
                 }
             }
-        } catch (e) { console.error(e); }
+        } catch (e) { console.error("Search error", e); }
     }
-    // Fallback
-    const results = MOCK_SONGS.filter(s => s.title.toLowerCase().includes(searchQuery.toLowerCase()));
-    setSearchResults(results);
+    // Fallback to Mock
+    setSearchResults(MOCK_SONGS.filter(s => s.title.toLowerCase().includes(searchQuery.toLowerCase())));
     setIsSearching(false);
   };
 
-  // --- GAMEPLAY ACTIONS ---
+  // --- GAME ACTIONS ---
   const syncUpdate = (updates: Partial<GameState>) => { if (db && gameState.roomId) update(ref(db, `rooms/${gameState.roomId}`), updates); };
 
   const createRoom = async () => {
-    if (!db) { alert("Firebase Error! Check Env Variables."); return; }
     const rid = Math.random().toString(36).substring(2, 6).toUpperCase();
     const pid = 'host_' + Date.now();
     const host: Player = { id: pid, name: 'Host', score: 0, isHost: true, avatar: 'https://picsum.photos/seed/host/100/100' };
@@ -203,7 +196,7 @@ export default function App() {
   };
 
   const joinRoom = async () => {
-    if (!db || !roomCodeInput) return;
+    if (!db || !roomCodeInput || !playerName) return;
     const code = roomCodeInput.toUpperCase().trim();
     const snap = await get(ref(db, `rooms/${code}`));
     if (snap.exists()) {
@@ -217,29 +210,24 @@ export default function App() {
     } else { alert("Room not found!"); }
   };
 
-  const startGame = async () => {
-    const q = await generateTriviaQuestions(10);
-    syncUpdate({ phase: GamePhase.PROMPT, questions: q.length > 0 ? q : INITIAL_QUESTIONS });
-  };
-
   const submitSong = (song: Song) => {
     const subs = [...(gameState.submissions || []), { playerId: currentPlayerId!, song }];
-    const players = gameState.players.filter(p => !p.isHost);
-    syncUpdate({ submissions: subs, phase: subs.length >= players.length ? GamePhase.LISTENING : gameState.phase });
+    const playingPlayers = gameState.players.filter(p => !p.isHost);
+    syncUpdate({ submissions: subs, phase: subs.length >= playingPlayers.length ? GamePhase.LISTENING : gameState.phase });
     setSearchQuery(''); setSearchResults([]);
   };
 
-  // --- RENDERING ---
+  // --- VIEWS ---
   if (!gameState.roomId) {
     return (
       <div className="min-h-screen bg-black text-white flex items-center justify-center p-4">
         <Card className="max-w-md w-full text-center space-y-6">
-          <Music size={48} className="text-[#1DB954] mx-auto" />
+          <Music size={48} className="text-[#1DB954] mx-auto animate-pulse" />
           <h1 className="text-4xl font-black italic">TUNE TRIVIA</h1>
-          <input value={playerName} onChange={e => setPlayerName(e.target.value)} placeholder="NAME" className="w-full bg-[#282828] p-3 rounded-xl text-center" />
-          <input value={roomCodeInput} onChange={e => setRoomCodeInput(e.target.value)} placeholder="ROOM CODE" className="w-full bg-[#282828] p-3 rounded-xl text-center uppercase" />
-          <Button onClick={createRoom} className="w-full">HOST</Button>
-          <Button onClick={joinRoom} variant="outline" className="w-full">JOIN</Button>
+          <input value={playerName} onChange={e => setPlayerName(e.target.value)} placeholder="YOUR NAME" className="w-full bg-[#282828] p-3 rounded-xl text-center font-bold" />
+          <input value={roomCodeInput} onChange={e => setRoomCodeInput(e.target.value)} placeholder="ROOM CODE" className="w-full bg-[#282828] p-3 rounded-xl text-center uppercase font-black tracking-widest" />
+          <Button onClick={createRoom} className="w-full">HOST PARTY</Button>
+          <Button onClick={joinRoom} variant="outline" className="w-full">JOIN ROOM</Button>
         </Card>
       </div>
     );
@@ -247,62 +235,101 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#121212] text-white flex flex-col">
+        {/* HEADER WITH GEAR ICON */}
         <header className="p-4 border-b border-[#282828] flex justify-between items-center bg-black/50 backdrop-blur-md sticky top-0 z-50">
-            <span className="font-black text-[#1DB954] italic">TUNE TRIVIA</span>
-            <div className="flex gap-2">
-                <div className="bg-[#1DB954]/10 text-[#1DB954] px-3 py-1 rounded-full text-xs font-bold">{gameState.roomId}</div>
-                <button onClick={() => setShowSettings(true)}><Settings size={20} /></button>
+            <span className="font-black text-[#1DB954] italic flex items-center gap-2"><Music size={18}/> TUNE TRIVIA</span>
+            <div className="flex items-center gap-3">
+                <div className="bg-[#1DB954]/10 text-[#1DB954] px-3 py-1 rounded-full text-xs font-black">{gameState.roomId}</div>
+                <button onClick={() => setShowSettings(true)} className="text-gray-400 hover:text-white transition-colors">
+                    <Settings size={24} />
+                </button>
             </div>
         </header>
 
+        {/* SETTINGS MODAL */}
         {showSettings && (
-            <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-sm">
-                <Card className="max-w-md w-full space-y-4">
-                    <h2 className="text-xl font-bold">Settings</h2>
-                    <input value={spotifyClientId} onChange={e => setSpotifyClientId(e.target.value)} placeholder="Spotify Client ID" className="w-full bg-[#282828] p-2 rounded" />
-                    <code className="text-[10px] text-gray-500 break-all">{suggestedRedirectUri}</code>
-                    <Button onClick={connectSpotify} className="w-full">Sync Spotify</Button>
+            <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in">
+                <Card className="max-w-md w-full space-y-6">
+                    <div className="flex justify-between items-center">
+                        <h2 className="text-xl font-bold text-[#1DB954]">Settings</h2>
+                        <button onClick={() => setShowSettings(false)}><X/></button>
+                    </div>
+                    <div className="space-y-4">
+                        <div>
+                            <label className="text-[10px] font-bold uppercase text-gray-500">Spotify Client ID</label>
+                            <input value={spotifyClientId} onChange={e => setSpotifyClientId(e.target.value)} placeholder="Paste Client ID" className="w-full bg-[#282828] p-2 rounded mt-1 font-mono text-xs" />
+                        </div>
+                        <div className="p-3 bg-black rounded-xl border border-white/5">
+                            <p className="text-[10px] text-gray-500 uppercase font-bold mb-1">Redirect URI</p>
+                            <code className="text-[10px] text-[#1DB954] break-all leading-none">{suggestedRedirectUri}</code>
+                        </div>
+                        <Button onClick={connectSpotify} className="w-full">Sync Spotify Account</Button>
+                        {spotifyToken && <p className="text-center text-[10px] text-green-500 font-bold uppercase">✓ Host Linked</p>}
+                    </div>
                     <Button onClick={() => setShowSettings(false)} variant="secondary" className="w-full">Close</Button>
                 </Card>
             </div>
         )}
 
-        <main className="flex-1 p-6 flex flex-col items-center">
+        <main className="flex-1 p-6 flex flex-col items-center overflow-y-auto">
             {gameState.phase === GamePhase.LOBBY && (
-                <div className="text-center space-y-8 w-full max-w-lg">
+                <div className="text-center space-y-8 w-full max-w-lg animate-in slide-in-from-bottom-4">
                     <h2 className="text-5xl font-black italic">Lobby</h2>
                     <div className="grid grid-cols-2 gap-4">
                         {gameState.players.map(p => (
-                            <div key={p.id} className="bg-[#181818] p-4 rounded-xl border border-white/5">{p.name}</div>
+                            <div key={p.id} className="bg-[#181818] p-4 rounded-2xl border border-[#282828] flex items-center gap-3">
+                                <img src={p.avatar} className="w-8 h-8 rounded-full" />
+                                <span className="font-bold truncate">{p.name}</span>
+                            </div>
                         ))}
                     </div>
-                    {isHost && <Button onClick={startGame} className="w-full">START GAME</Button>}
+                    {isHost ? (
+                        <Button onClick={startGame} className="w-full py-6 text-xl">START SESSION</Button>
+                    ) : (
+                        <div className="text-[#1DB954] animate-pulse font-black uppercase tracking-widest">Waiting for host...</div>
+                    )}
                 </div>
             )}
 
             {gameState.phase === GamePhase.PROMPT && (
-                <div className="text-center space-y-8 py-10">
-                    <h2 className="text-4xl sm:text-6xl font-black italic leading-tight">"{gameState.questions[gameState.currentQuestionIndex] || '...'}"</h2>
-                    {isHost && <Button onClick={() => syncUpdate({ phase: GamePhase.SUBMITTING })}>OPEN SEARCH</Button>}
+                <div className="text-center space-y-8 py-10 max-w-2xl">
+                    <p className="text-[#1DB954] font-black uppercase tracking-[0.5em] text-xs">Round {gameState.currentQuestionIndex + 1}</p>
+                    <h2 className="text-4xl sm:text-6xl font-black italic leading-tight">"{gameState.questions[gameState.currentQuestionIndex]}"</h2>
+                    {isHost && <Button onClick={() => syncUpdate({ phase: GamePhase.SUBMITTING })}>OPEN SELECTION</Button>}
                 </div>
             )}
 
             {gameState.phase === GamePhase.SUBMITTING && (
-                <div className="w-full max-w-xl space-y-6">
-                    <h3 className="text-center font-bold text-gray-400 italic">"{gameState.questions[gameState.currentQuestionIndex]}"</h3>
+                <div className="w-full max-w-xl space-y-6 animate-in fade-in">
+                    <div className="text-center bg-[#181818] p-6 rounded-3xl border border-[#1DB954]/10">
+                        <h3 className="text-xl font-black italic">"{gameState.questions[gameState.currentQuestionIndex]}"</h3>
+                    </div>
+                    
                     {gameState.submissions.some(s => s.playerId === currentPlayerId) ? (
-                        <div className="text-center py-20"><Check size={64} className="text-[#1DB954] mx-auto" /><p>Locked In!</p></div>
+                        <div className="text-center py-20 space-y-4">
+                            <Check size={80} className="text-[#1DB954] mx-auto animate-bounce" />
+                            <h2 className="text-3xl font-black italic uppercase">Choice Locked</h2>
+                            <p className="text-gray-500 font-bold uppercase tracking-widest">Waiting for friends...</p>
+                        </div>
                     ) : (
                         <>
-                            <div className="flex gap-2 bg-[#282828] p-2 rounded-full">
-                                <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSearch()} placeholder="Search Spotify..." className="flex-1 bg-transparent px-4 outline-none font-bold" />
+                            <div className="flex gap-2 bg-[#242424] p-2 rounded-full border-2 border-transparent focus-within:border-[#1DB954]">
+                                <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSearch()} placeholder="Search Spotify library..." className="flex-1 bg-transparent px-4 outline-none font-bold" />
                                 <Button onClick={handleSearch} className="px-6 py-2">Search</Button>
                             </div>
-                            <div className="space-y-2">
-                                {isSearching ? <div className="text-center py-10">Searching...</div> : searchResults.map(s => (
-                                    <div key={s.id} onClick={() => submitSong(s)} className="bg-[#181818] p-3 rounded-xl flex items-center gap-4 hover:bg-[#282828] cursor-pointer">
-                                        <img src={s.albumArt} className="w-12 h-12 rounded" />
-                                        <div><p className="font-bold leading-none">{s.title}</p><p className="text-xs text-gray-500">{s.artist}</p></div>
+                            
+                            {searchError && <div className="text-center text-xs text-red-500 font-bold bg-red-500/10 p-2 rounded-lg">{searchError}</div>}
+
+                            <div className="space-y-2 max-h-[50vh] overflow-y-auto custom-scrollbar">
+                                {isSearching ? (
+                                    <div className="text-center py-10 animate-pulse text-gray-500 font-bold uppercase italic">Digging...</div>
+                                ) : searchResults.map(s => (
+                                    <div key={s.id} onClick={() => submitSong(s)} className="bg-[#181818] p-3 rounded-2xl flex items-center gap-4 hover:bg-[#282828] cursor-pointer border border-transparent hover:border-[#1DB954]">
+                                        <img src={s.albumArt} className="w-14 h-14 rounded-lg shadow-lg" />
+                                        <div className="overflow-hidden">
+                                            <p className="font-black leading-none truncate">{s.title}</p>
+                                            <p className="text-xs text-gray-500 font-bold mt-1 italic">{s.artist}</p>
+                                        </div>
                                     </div>
                                 ))}
                             </div>
@@ -312,29 +339,38 @@ export default function App() {
             )}
 
             {gameState.phase === GamePhase.LISTENING && (
-                <div className="text-center space-y-6 w-full max-w-md">
-                    <h2 className="text-3xl font-black italic">Listen Up</h2>
-                    <div className="aspect-square bg-black border-8 border-[#181818] rounded-full flex items-center justify-center animate-[spin_8s_linear_infinite]">
-                        {gameState.submissions[listeningIndex] && <img src={gameState.submissions[listeningIndex].song.albumArt} className="w-1/2 rounded-full" />}
+                <div className="text-center space-y-10 w-full max-w-md animate-in zoom-in">
+                    <h2 className="text-3xl font-black italic uppercase text-[#1DB954]">The Reveal</h2>
+                    <div className="aspect-square bg-black border-[12px] border-[#181818] rounded-full flex items-center justify-center animate-[spin_10s_linear_infinite] shadow-2xl relative">
+                        <div className="absolute inset-0 rounded-full border-2 border-white/5"></div>
+                        {gameState.submissions[listeningIndex] && (
+                            <img src={gameState.submissions[listeningIndex].song.albumArt} className="w-1/2 rounded-full border-4 border-black" />
+                        )}
                     </div>
+                    {gameState.submissions[listeningIndex] && (
+                        <div>
+                            <h3 className="text-3xl font-black italic tracking-tighter leading-none mb-2">{gameState.submissions[listeningIndex].song.title}</h3>
+                            <p className="text-xl text-gray-500 font-bold italic">{gameState.submissions[listeningIndex].song.artist}</p>
+                        </div>
+                    )}
                     {isHost && (
                         <div className="flex gap-4 justify-center">
-                            <Button onClick={() => setListeningIndex(Math.max(0, listeningIndex - 1))} variant="secondary">Prev</Button>
+                            <Button onClick={() => setListeningIndex(i => Math.max(0, i - 1))} variant="secondary">PREV</Button>
                             {listeningIndex < gameState.submissions.length - 1 ? 
-                                <Button onClick={() => setListeningIndex(listeningIndex + 1)}>Next</Button> : 
-                                <Button onClick={() => syncUpdate({ phase: GamePhase.VOTING })}>Vote</Button>
+                                <Button onClick={() => setListeningIndex(i => i + 1)}>NEXT TRACK</Button> : 
+                                <Button onClick={() => syncUpdate({ phase: GamePhase.VOTING })}>START VOTING</Button>
                             }
                         </div>
                     )}
                 </div>
             )}
-            
-            {/* Simple fallback view for other phases to avoid blank screens */}
-            {![GamePhase.LOBBY, GamePhase.PROMPT, GamePhase.SUBMITTING, GamePhase.LISTENING].includes(gameState.phase) && (
+
+            {/* Voting Fallback View */}
+            {gameState.phase === GamePhase.VOTING && (
                 <div className="text-center py-20">
-                    <h2 className="text-4xl font-black italic text-[#1DB954]">{gameState.phase} PHASE</h2>
-                    <p className="mt-4 text-gray-500">Coming up next...</p>
-                    {isHost && <Button onClick={() => syncUpdate({ phase: GamePhase.SCOREBOARD })} className="mt-8">Next</Button>}
+                    <h2 className="text-5xl font-black italic text-[#1DB954]">VOTING TIME</h2>
+                    <p className="mt-4 text-gray-400 font-bold uppercase">Cast your votes on your devices!</p>
+                    {isHost && <Button onClick={() => syncUpdate({ phase: GamePhase.SCOREBOARD })} className="mt-8">GO TO RESULTS</Button>}
                 </div>
             )}
         </main>
