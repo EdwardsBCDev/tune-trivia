@@ -1113,9 +1113,7 @@ export default function App() {
     );
 
   // Avoid mutating state arrays by sorting copies
-  const sortedPlayers = useMemo(() => {
-    return [...gameState.players].sort((a, b) => b.score - a.score);
-  }, [gameState.players]);
+  const sortedPlayers = [...gameState.players].sort((a, b) => b.score - a.score);
 
   return (
     <div className="min-h-screen bg-[#121212] text-white flex flex-col selection:bg-[#1DB954] selection:text-black">
