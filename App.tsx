@@ -1,7 +1,5 @@
-// App.tsx
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
-  Play,
   Users,
   Music,
   Check,
@@ -9,19 +7,14 @@ import {
   Search,
   Trophy,
   RefreshCw,
-  QrCode,
-  Volume2,
   Settings,
-  ShieldCheck,
   X,
   Copy,
   AlertCircle,
-  Zap,
   Disc,
   Headphones,
   Eye,
   XCircle,
-  TrendingUp,
 } from "lucide-react";
 
 // --- FIREBASE IMPORTS ---
@@ -47,13 +40,45 @@ import {
 } from "./services/geminiService";
 
 /**
- * IMPORTANT (types.ts change recommended)
- * Add these to your GameState type (or make optional):
+ * We extend GameState locally so you do NOT have to change your types.ts tonight.
+ * If you want later, add:
  *  - listeningIndex?: number;
  *  - hostToken?: string;
- *
- * If you keep them optional, this file compiles safely.
  */
+type GameStateExt = GameState & {
+  listeningIndex?: number;
+  hostToken?: string;
+};
+
+// ------------------------------------------------------------------
+// PKCE HELPERS (Spotify now requires this for SPAs)
+// ------------------------------------------------------------------
+const generateRandomString = (length: number) => {
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  let result = "";
+  const values = crypto.getRandomValues(new Uint8Array(length));
+  values.forEach((v) => (result += chars[v % chars.length]));
+  return result;
+};
+
+const sha256 = async (plain: string) => {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(plain);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  return new Uint8Array(hashBuffer);
+};
+
+const base64UrlEncode = (array: Uint8Array) =>
+  btoa(String.fromCharCode(...array))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+const generateCodeChallenge = async (verifier: string) => {
+  const hashed = await sha256(verifier);
+  return base64UrlEncode(hashed);
+};
 
 // --- CONFIGURATION ---
 const firebaseConfig = {
@@ -88,7 +113,8 @@ const Button: React.FC<{
     primary: "bg-[#1DB954] hover:bg-[#1ed760] text-black font-bold",
     secondary: "bg-[#282828] hover:bg-[#3e3e3e] text-white font-medium",
     danger: "bg-red-600 hover:bg-red-700 text-white font-medium",
-    outline: "border border-[#535353] hover:border-white text-white font-medium",
+    outline:
+      "border border-[#535353] hover:border-white text-white font-medium",
     spotify:
       "bg-[#1DB954] hover:scale-105 text-black font-bold flex items-center gap-2",
   };
@@ -97,9 +123,7 @@ const Button: React.FC<{
     <button
       onClick={onClick}
       disabled={disabled}
-      className={`px-6 py-3 rounded-full transition-all duration-300 active:scale-95 disabled:opacity-50 disabled:scale-100 shadow-md hover:shadow-[#1DB954]/20 ${
-        variants[variant]
-      } ${className}`}
+      className={`px-6 py-3 rounded-full transition-all duration-300 active:scale-95 disabled:opacity-50 disabled:scale-100 shadow-md hover:shadow-[#1DB954]/20 ${variants[variant]} ${className}`}
     >
       {children}
     </button>
@@ -130,8 +154,8 @@ export default function App() {
     () => sessionStorage.getItem("tune_player_name") || ""
   );
 
-  // Game State
-  const [gameState, setGameState] = useState<GameState>({
+  // Game State (extended)
+  const [gameState, setGameState] = useState<GameStateExt>({
     roomId: "",
     phase: GamePhase.LOBBY,
     currentQuestionIndex: 0,
@@ -140,10 +164,8 @@ export default function App() {
     submissions: [],
     guesses: [],
     currentRevealIndex: 0,
-    // recommended additions (keep optional in types.ts if you prefer)
-    listeningIndex: 0 as any,
-    hostToken: "" as any,
-  } as any);
+    listeningIndex: 0,
+  });
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Song[]>([]);
@@ -151,7 +173,9 @@ export default function App() {
   const [isAnnouncing, setIsAnnouncing] = useState(false);
 
   // Spotify Integration State
-  const [spotifyConnected, setSpotifyConnected] = useState(false);
+  const [spotifyConnected, setSpotifyConnected] = useState<boolean>(() => {
+    return !!localStorage.getItem("spotify_access_token");
+  });
   const [showSettings, setShowSettings] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
@@ -161,27 +185,40 @@ export default function App() {
   );
   const [hostToken, setHostToken] = useState<string | null>(null);
 
-  const [spotifyClientId, setSpotifyClientId] = useState(
-    () =>
+  // Token refresh metadata
+  const [spotifyRefreshToken, setSpotifyRefreshToken] = useState<string | null>(
+    () => localStorage.getItem("spotify_refresh_token")
+  );
+  const [spotifyExpiresAt, setSpotifyExpiresAt] = useState<number>(() => {
+    const v = localStorage.getItem("spotify_expires_at");
+    return v ? Number(v) : 0;
+  });
+
+  // Keep a ref so WebPlayback getOAuthToken always uses latest token
+  const spotifyTokenRef = useRef<string | null>(spotifyToken);
+  useEffect(() => {
+    spotifyTokenRef.current = spotifyToken;
+  }, [spotifyToken]);
+
+  const [spotifyClientId, setSpotifyClientId] = useState(() => {
+    return (
       import.meta.env.VITE_SPOTIFY_CLIENT_ID ||
       localStorage.getItem("spotify_client_id") ||
       ""
-  );
+    );
+  });
 
-  const [manualRedirectUri, setManualRedirectUri] = useState(
-    () => localStorage.getItem("spotify_redirect_uri_override") || ""
-  );
+  // Optional manual override if needed
+  const [manualRedirectUri, setManualRedirectUri] = useState(() => {
+    return localStorage.getItem("spotify_redirect_uri_override") || "";
+  });
 
   const audioContextRef = useRef<AudioContext | null>(null);
 
-  // --- DERIVED ---
-  const myPlayer = gameState.players.find((p) => p.id === currentPlayerId);
-  const isHost = myPlayer?.isHost;
-
-  const sortedPlayers = useMemo(() => {
-    // Avoid in-place sorting the state array (can cause weird UI bugs).
-    return [...(gameState.players || [])].sort((a, b) => b.score - a.score);
-  }, [gameState.players]);
+  // Spotify Web Playback SDK refs (host only)
+  const playerRef = useRef<any>(null);
+  const deviceIdRef = useRef<string | null>(null);
+  const sdkLoadedRef = useRef<boolean>(false);
 
   // --- FIREBASE SYNC EFFECT ---
   useEffect(() => {
@@ -193,28 +230,35 @@ export default function App() {
       const data = snapshot.val();
       if (data) {
         setGameState((prev) => ({ ...prev, ...data }));
+
+        // SYNC HOST TOKEN FOR GUESTS
         if (data.hostToken) setHostToken(data.hostToken);
       }
     });
 
     return () => unsubscribe();
-  }, [gameState.roomId, db]);
+  }, [gameState.roomId]);
 
-  // --- HOST PROXY LOGIC (share host token) ---
+  // --- HOST PROXY LOGIC ---
+  const myPlayer = gameState.players.find((p) => p.id === currentPlayerId);
+  const isHost = myPlayer?.isHost;
+
+  // Share host token with room (guests can search)
   useEffect(() => {
     if (isHost && spotifyToken && gameState.roomId && db) {
-      update(ref(db, `rooms/${gameState.roomId}`), { hostToken: spotifyToken }).catch(
-        (e) => console.error("Failed to publish hostToken:", e)
-      );
+      update(ref(db, `rooms/${gameState.roomId}`), {
+        hostToken: spotifyToken,
+      }).catch(() => {});
     }
-  }, [isHost, spotifyToken, gameState.roomId, db]);
+  }, [isHost, spotifyToken, gameState.roomId]);
 
-  // --- SPOTIFY REDIRECT URI FIX (prevents nip.io.nip.io) ---
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  // --- REDIRECT URI (FIX nip.io.nip.io issue) ---
+  const origin =
+    typeof window !== "undefined" ? window.location.origin : "";
   const hostname =
     typeof window !== "undefined" ? new URL(origin).hostname : "";
 
-  // Only treat it as "bare IP" if the hostname IS exactly an IP.
+  // Only treat as IP if hostname IS exactly IP (not when it contains an IP)
   const isBareIP = /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname);
 
   const suggestedRedirectUri =
@@ -223,30 +267,30 @@ export default function App() {
       ? `${window.location.protocol}//${hostname}.nip.io/`
       : `${origin}/`);
 
-  // --- SPOTIFY AUTH HANDLING (robust hash parsing) ---
+  // Persist settings
   useEffect(() => {
-    const hash = window.location.hash;
-    if (!hash) return;
+    localStorage.setItem("spotify_client_id", spotifyClientId);
+    localStorage.setItem("spotify_redirect_uri_override", manualRedirectUri);
+  }, [spotifyClientId, manualRedirectUri]);
 
-    const params = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
-    const token = params.get("access_token");
-    if (!token) return;
+  // ------------------------------------------------------------------
+  // SPOTIFY AUTH (PKCE) + TOKEN EXCHANGE
+  // ------------------------------------------------------------------
 
-    setSpotifyConnected(true);
-    setSpotifyToken(token);
-    localStorage.setItem("spotify_access_token", token);
-
-    // Clear hash so refresh doesn't re-run auth parsing
-    window.history.replaceState(null, "", window.location.pathname);
-  }, []);
-
-  const connectSpotify = () => {
+  const connectSpotify = async () => {
     if (!spotifyClientId) {
       setShowSettings(true);
       return;
     }
 
-    const AUTH_ENDPOINT = "https://accounts.spotify.com/authorize";
+    const redirectUri = suggestedRedirectUri.endsWith("/")
+      ? suggestedRedirectUri
+      : suggestedRedirectUri + "/";
+
+    const verifier = generateRandomString(128);
+    const challenge = await generateCodeChallenge(verifier);
+    sessionStorage.setItem("spotify_pkce_verifier", verifier);
+
     const scopes = [
       "user-read-playback-state",
       "user-modify-playback-state",
@@ -256,49 +300,307 @@ export default function App() {
       "user-read-private",
     ].join(" ");
 
-    // Spotify redirect URI must match EXACTLY what’s in the dashboard
-    const finalUri = suggestedRedirectUri.endsWith("/")
-      ? suggestedRedirectUri
-      : suggestedRedirectUri + "/";
-
     const authUrl =
-      `${AUTH_ENDPOINT}?client_id=${encodeURIComponent(spotifyClientId)}` +
-      `&redirect_uri=${encodeURIComponent(finalUri)}` +
+      "https://accounts.spotify.com/authorize" +
+      `?client_id=${encodeURIComponent(spotifyClientId)}` +
+      `&response_type=code` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
       `&scope=${encodeURIComponent(scopes)}` +
-      `&response_type=token&show_dialog=true`;
+      `&code_challenge_method=S256` +
+      `&code_challenge=${challenge}` +
+      `&show_dialog=true`;
 
     window.location.href = authUrl;
   };
 
-  // Persist settings
+  // Exchange ?code= for token
   useEffect(() => {
-    localStorage.setItem("spotify_client_id", spotifyClientId);
-    localStorage.setItem("spotify_redirect_uri_override", manualRedirectUri);
-  }, [spotifyClientId, manualRedirectUri]);
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    const error = params.get("error");
 
-  // --- AUDIO LOGIC ---
-  const initAudio = () => {
+    if (error) {
+      console.error("Spotify auth error:", error);
+      return;
+    }
+
+    if (!code) return;
+
+    const verifier = sessionStorage.getItem("spotify_pkce_verifier");
+    if (!verifier) {
+      console.error("Missing PKCE verifier in sessionStorage");
+      return;
+    }
+
+    const redirectUri = suggestedRedirectUri.endsWith("/")
+      ? suggestedRedirectUri
+      : suggestedRedirectUri + "/";
+
+    const body = new URLSearchParams({
+      client_id: spotifyClientId,
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: redirectUri,
+      code_verifier: verifier,
+    });
+
+    fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data?.access_token) {
+          console.error("Spotify token exchange failed:", data);
+          return;
+        }
+
+        const expiresAt = Date.now() + (data.expires_in || 3600) * 1000;
+
+        setSpotifyConnected(true);
+        setSpotifyToken(data.access_token);
+        setSpotifyRefreshToken(data.refresh_token || null);
+        setSpotifyExpiresAt(expiresAt);
+
+        localStorage.setItem("spotify_access_token", data.access_token);
+        if (data.refresh_token) {
+          localStorage.setItem("spotify_refresh_token", data.refresh_token);
+        }
+        localStorage.setItem("spotify_expires_at", String(expiresAt));
+
+        // Clean URL
+        window.history.replaceState({}, "", window.location.pathname);
+      })
+      .catch((e) => console.error("Spotify auth exchange error:", e));
+  }, [spotifyClientId, suggestedRedirectUri]);
+
+  // ------------------------------------------------------------------
+  // TOKEN REFRESH (auto refresh ~2 mins before expiry)
+  // ------------------------------------------------------------------
+  const refreshSpotifyToken = async () => {
+    const refreshToken =
+      spotifyRefreshToken || localStorage.getItem("spotify_refresh_token");
+    if (!refreshToken) return;
+
+    const body = new URLSearchParams({
+      client_id: spotifyClientId,
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    });
+
     try {
-      if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext ||
-          (window as any).webkitAudioContext)();
+      const res = await fetch("https://accounts.spotify.com/api/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+      });
+
+      const data = await res.json();
+      if (!data?.access_token) {
+        console.error("Spotify refresh failed:", data);
+        return;
       }
-      if (audioContextRef.current.state === "suspended") {
-        audioContextRef.current.resume().catch(() => {});
+
+      const expiresAt = Date.now() + (data.expires_in || 3600) * 1000;
+
+      setSpotifyToken(data.access_token);
+      setSpotifyConnected(true);
+      setSpotifyExpiresAt(expiresAt);
+
+      localStorage.setItem("spotify_access_token", data.access_token);
+      localStorage.setItem("spotify_expires_at", String(expiresAt));
+
+      // Spotify may sometimes rotate refresh token (rare)
+      if (data.refresh_token) {
+        setSpotifyRefreshToken(data.refresh_token);
+        localStorage.setItem("spotify_refresh_token", data.refresh_token);
       }
     } catch (e) {
-      console.warn("Audio init failed:", e);
+      console.error("Spotify refresh error:", e);
+    }
+  };
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      const expiresAt =
+        spotifyExpiresAt ||
+        Number(localStorage.getItem("spotify_expires_at") || 0);
+      if (!expiresAt) return;
+
+      // Refresh 2 mins before expiry
+      if (Date.now() > expiresAt - 120_000) {
+        refreshSpotifyToken();
+      }
+    }, 30_000);
+
+    return () => window.clearInterval(interval);
+  }, [spotifyExpiresAt, spotifyClientId, spotifyRefreshToken]);
+
+  // ------------------------------------------------------------------
+  // SPOTIFY WEB PLAYBACK SDK (host-only playback)
+  // ------------------------------------------------------------------
+
+  // Load SDK script once
+  useEffect(() => {
+    if (sdkLoadedRef.current) return;
+
+    const script = document.createElement("script");
+    script.src = "https://sdk.scdn.co/spotify-player.js";
+    script.async = true;
+    script.onload = () => {
+      sdkLoadedRef.current = true;
+    };
+    document.body.appendChild(script);
+
+    return () => {
+      document.body.removeChild(script);
+    };
+  }, []);
+
+  // Transfer playback to Web Playback SDK device (Spotify requires this)
+  const transferPlaybackToDevice = async (deviceId: string) => {
+    const token = spotifyTokenRef.current;
+    if (!token) return;
+
+    try {
+      await fetch("https://api.spotify.com/v1/me/player", {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          device_ids: [deviceId],
+          play: false,
+        }),
+      });
+    } catch (e) {
+      console.error("Transfer playback failed:", e);
+    }
+  };
+
+  // Init player when host has a token
+  useEffect(() => {
+    if (!isHost) return;
+    if (!spotifyToken) return;
+    if (playerRef.current) return;
+
+    // SDK sets this global when ready
+    (window as any).onSpotifyWebPlaybackSDKReady = () => {
+      const Spotify = (window as any).Spotify;
+      if (!Spotify?.Player) return;
+
+      const player = new Spotify.Player({
+        name: "Tune Trivia Party",
+        getOAuthToken: (cb: any) => cb(spotifyTokenRef.current),
+        volume: 0.8,
+      });
+
+      player.addListener("ready", async ({ device_id }: any) => {
+        deviceIdRef.current = device_id;
+        console.log("Web Playback SDK ready, device:", device_id);
+        await transferPlaybackToDevice(device_id);
+      });
+
+      player.addListener("not_ready", ({ device_id }: any) => {
+        console.warn("Device went offline:", device_id);
+      });
+
+      player.addListener("initialization_error", ({ message }: any) =>
+        console.error("init error", message)
+      );
+      player.addListener("authentication_error", ({ message }: any) =>
+        console.error("auth error", message)
+      );
+      player.addListener("account_error", ({ message }: any) =>
+        console.error("account error (Premium required)", message)
+      );
+      player.addListener("playback_error", ({ message }: any) =>
+        console.error("playback error", message)
+      );
+
+      player.connect();
+      playerRef.current = player;
+    };
+
+    // If SDK already loaded and ready, call manually (some browsers)
+    const maybeSpotify = (window as any).Spotify;
+    if (maybeSpotify?.Player && (window as any).onSpotifyWebPlaybackSDKReady) {
+      (window as any).onSpotifyWebPlaybackSDKReady();
+    }
+  }, [isHost, spotifyToken]);
+
+  const playTrackOnHost = async (spotifyTrackId: string) => {
+    const token = spotifyTokenRef.current;
+    const deviceId = deviceIdRef.current;
+    if (!token || !deviceId) return;
+
+    try {
+      const res = await fetch(
+        `https://api.spotify.com/v1/me/player/play?device_id=${encodeURIComponent(
+          deviceId
+        )}`,
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            uris: [`spotify:track:${spotifyTrackId}`],
+          }),
+        }
+      );
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        console.warn("Play failed:", res.status, txt);
+
+        // If token expired unexpectedly, attempt refresh once
+        if (res.status === 401) {
+          await refreshSpotifyToken();
+        }
+      }
+    } catch (e) {
+      console.error("Play track error:", e);
+    }
+  };
+
+  // Auto-play when host changes listeningIndex in LISTENING
+  useEffect(() => {
+    if (!isHost) return;
+    if (gameState.phase !== GamePhase.LISTENING) return;
+
+    const idx = gameState.listeningIndex ?? 0;
+    const sub = gameState.submissions?.[idx];
+    if (!sub) return;
+
+    // Only autoplay Spotify tracks (Spotify results have real IDs; AI/mock might not)
+    if (sub.song?.id && !sub.song.id.startsWith("ai-")) {
+      playTrackOnHost(sub.song.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameState.phase, gameState.listeningIndex]);
+
+  // --- AUDIO LOGIC (announcement) ---
+  const initAudio = () => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext ||
+        (window as any).webkitAudioContext)();
+    }
+    if (audioContextRef.current.state === "suspended") {
+      audioContextRef.current.resume().catch(() => {});
     }
   };
 
   const playAnnouncement = async (song: Song, pName: string) => {
-    // Recommended: only host plays announcement to avoid multi-client spam and rate limits
+    // Host only, avoids duplicate calls/rate limits
     if (!isHost) return;
 
     try {
       initAudio();
       setIsAnnouncing(true);
-
       const base64Data = await generateAnnouncementAudio(
         song.title,
         song.artist,
@@ -311,7 +613,6 @@ export default function App() {
           audioData,
           audioContextRef.current
         );
-
         const source = audioContextRef.current.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioContextRef.current.destination);
@@ -327,24 +628,22 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (gameState.phase !== GamePhase.REVEAL) return;
+    if (gameState.phase === GamePhase.REVEAL) {
+      const currentSub = gameState.submissions[gameState.currentRevealIndex];
+      if (!currentSub) return;
 
-    const currentSub = gameState.submissions?.[gameState.currentRevealIndex];
-    if (!currentSub) return;
-
-    const player = gameState.players.find((p) => p.id === currentSub.playerId);
-    if (player) {
-      playAnnouncement(currentSub.song, player.name);
+      const player = gameState.players.find((p) => p.id === currentSub.playerId);
+      if (player) playAnnouncement(currentSub.song, player.name);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameState.phase, gameState.currentRevealIndex]);
 
   // --- GAME ACTIONS ---
 
-  const syncUpdate = async (updates: Partial<GameState>) => {
+  const syncUpdate = async (updates: Partial<GameStateExt>) => {
     if (!db || !gameState.roomId) return;
     try {
-      await update(ref(db, `rooms/${gameState.roomId}`), updates);
+      await update(ref(db, `rooms/${gameState.roomId}`), updates as any);
     } catch (e: any) {
       console.error("Firebase update failed:", e);
       alert(`Firebase error: ${e?.message || e}`);
@@ -358,7 +657,6 @@ export default function App() {
       );
       return;
     }
-
     initAudio();
 
     const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -372,7 +670,7 @@ export default function App() {
       avatar: "https://picsum.photos/seed/host/100/100",
     };
 
-    const initialGame: GameState = {
+    const initialGame: GameStateExt = {
       roomId: newRoomId,
       phase: GamePhase.LOBBY,
       currentQuestionIndex: 0,
@@ -381,19 +679,14 @@ export default function App() {
       submissions: [],
       guesses: [],
       currentRevealIndex: 0,
-      listeningIndex: 0 as any,
-      hostToken: "" as any,
-    } as any;
+      listeningIndex: 0,
+      hostToken: "",
+    };
 
-    try {
-      await set(ref(db, `rooms/${newRoomId}`), initialGame);
-      setCurrentPlayerId(hostId);
-      sessionStorage.setItem("tune_player_id", hostId);
-      setGameState(initialGame);
-    } catch (e: any) {
-      console.error("Create room failed:", e);
-      alert(`Create room failed: ${e?.message || e}`);
-    }
+    await set(ref(db, `rooms/${newRoomId}`), initialGame as any);
+    setCurrentPlayerId(hostId);
+    sessionStorage.setItem("tune_player_id", hostId);
+    setGameState(initialGame);
   };
 
   const joinRoom = async () => {
@@ -409,45 +702,38 @@ export default function App() {
 
     const code = roomCodeInput.toUpperCase().trim();
     const roomRef = ref(db, `rooms/${code}`);
+    const snapshot = await get(roomRef);
 
-    try {
-      const snapshot = await get(roomRef);
-
-      if (!snapshot.exists()) {
-        alert("Room not found! Check the code.");
-        return;
-      }
-
-      const game = snapshot.val();
-      const newPlayerId = currentPlayerId || `p_${Date.now()}`;
-
-      const newPlayer: Player = {
-        id: newPlayerId,
-        name: playerName,
-        score: 0,
-        isHost: false,
-        avatar: `https://picsum.photos/seed/${newPlayerId}/100/100`,
-      };
-
-      // Use transaction to avoid clobbering players when multiple join at once
-      await runTransaction(roomRef, (room: any) => {
-        if (!room) return room;
-        const players = room.players || [];
-        const exists = players.some((p: any) => p.id === newPlayerId);
-        if (!exists) {
-          room.players = [...players, newPlayer];
-        }
-        return room;
-      });
-
-      sessionStorage.setItem("tune_player_id", newPlayerId);
-      sessionStorage.setItem("tune_player_name", playerName);
-      setCurrentPlayerId(newPlayerId);
-      setGameState(game);
-    } catch (e: any) {
-      console.error("Join room failed:", e);
-      alert(`Join room failed: ${e?.message || e}`);
+    if (!snapshot.exists()) {
+      alert("Room not found! Check the code.");
+      return;
     }
+
+    const game = snapshot.val();
+    const newPlayerId = currentPlayerId || `p_${Date.now()}`;
+
+    const newPlayer: Player = {
+      id: newPlayerId,
+      name: playerName,
+      score: 0,
+      isHost: false,
+      avatar: `https://picsum.photos/seed/${newPlayerId}/100/100`,
+    };
+
+    // Transaction prevents race conditions when multiple join
+    await runTransaction(roomRef, (room: any) => {
+      if (!room) return room;
+      room.players = room.players || [];
+      if (!room.players.some((p: any) => p.id === newPlayerId)) {
+        room.players.push(newPlayer);
+      }
+      return room;
+    });
+
+    sessionStorage.setItem("tune_player_id", newPlayerId);
+    sessionStorage.setItem("tune_player_name", playerName);
+    setCurrentPlayerId(newPlayerId);
+    setGameState(game);
   };
 
   const startGame = async () => {
@@ -460,38 +746,38 @@ export default function App() {
     try {
       const generated = await generateTriviaQuestions(10);
       if (generated.length > 0) aiQuestions = generated;
-    } catch (e) {
+    } catch {
       console.log("AI Generation failed, using defaults");
     }
 
-    await syncUpdate({
+    syncUpdate({
       phase: GamePhase.PROMPT,
       questions: aiQuestions,
       currentQuestionIndex: 0,
       submissions: [],
       guesses: [],
       currentRevealIndex: 0,
-      listeningIndex: 0 as any,
-    } as any);
+      listeningIndex: 0,
+    });
   };
 
-  const handleNextPrompt = async () => {
+  const handleNextPrompt = () => {
     setSearchQuery("");
     setSearchResults([]);
     setSearchError(null);
 
-    await syncUpdate({
+    syncUpdate({
       phase: GamePhase.SUBMITTING,
       submissions: [],
       guesses: [],
       currentRevealIndex: 0,
-      listeningIndex: 0 as any,
-    } as any);
+      listeningIndex: 0,
+    });
   };
 
-  // --- SAFE SUBMIT (transaction to prevent lost submissions) ---
+  // SUBMIT SONG (transaction => no lost submissions)
   const submitSong = async (song: Song) => {
-    if (!db || !gameState.roomId || !currentPlayerId) return;
+    if (!currentPlayerId || !db || !gameState.roomId) return;
 
     setSearchQuery("");
     setSearchResults([]);
@@ -499,45 +785,36 @@ export default function App() {
 
     const roomRef = ref(db, `rooms/${gameState.roomId}`);
 
-    try {
-      await runTransaction(roomRef, (room: any) => {
-        if (!room) return room;
+    await runTransaction(roomRef, (room: any) => {
+      if (!room) return room;
 
-        const currentSubs = room.submissions || [];
-        if (currentSubs.find((s: any) => s.playerId === currentPlayerId)) {
-          return room;
-        }
+      const currentSubs = room.submissions || [];
+      if (currentSubs.find((s: any) => s.playerId === currentPlayerId)) return room;
 
-        const updatedSubs = [...currentSubs, { playerId: currentPlayerId, song }];
+      const updatedSubs = [...currentSubs, { playerId: currentPlayerId, song }];
 
-        const playingPlayers = (room.players || []).filter((p: any) => !p.isHost);
-        const hasEveryoneSubmitted = updatedSubs.length >= playingPlayers.length;
+      const playingPlayers = (room.players || []).filter((p: any) => !p.isHost);
+      const hasEveryoneSubmitted = updatedSubs.length >= playingPlayers.length;
 
-        room.submissions = updatedSubs;
+      room.submissions = updatedSubs;
 
-        if (hasEveryoneSubmitted) {
-          room.phase = GamePhase.LISTENING;
-          room.listeningIndex = 0;
-        }
+      if (hasEveryoneSubmitted) {
+        room.phase = GamePhase.LISTENING;
+        room.listeningIndex = 0;
+      }
 
-        return room;
-      });
-    } catch (e: any) {
-      console.error("Submit song failed:", e);
-      alert(`Submit failed: ${e?.message || e}`);
-    }
+      return room;
+    });
   };
 
-  // --- SEARCH LOGIC ---
+  // --- UPDATED SEARCH LOGIC (uses own token or host token) ---
   const handleSearch = async () => {
     if (!searchQuery.trim()) return;
-
     setIsSearching(true);
     setSearchError(null);
 
     const tokenToUse = spotifyToken || hostToken;
 
-    // 1) Spotify Search
     if (tokenToUse) {
       try {
         const response = await fetch(
@@ -550,28 +827,28 @@ export default function App() {
         );
 
         if (response.status === 401) {
-          const msg = spotifyToken
-            ? "Your Spotify token expired. Please re-sync Spotify in Settings."
-            : "Host Spotify token expired. Host needs to re-sync Spotify in Settings.";
-          setSearchError(msg);
-          throw new Error("Spotify token expired (401)");
+          setSearchError(
+            spotifyToken
+              ? "Your Spotify token expired. Reconnect in Settings."
+              : "Host Spotify token expired. Host needs to reconnect."
+          );
+          throw new Error("Token expired");
         }
 
         if (!response.ok) {
           const txt = await response.text().catch(() => "");
-          throw new Error(`Spotify search failed (${response.status}): ${txt}`);
+          throw new Error(`Spotify search failed: ${response.status} ${txt}`);
         }
 
         const data = await response.json();
 
-        if (data?.tracks?.items) {
+        if (data.tracks && data.tracks.items) {
           const spotifyResults: Song[] = data.tracks.items.map((t: any) => ({
             id: t.id,
             title: t.name,
-            artist: t.artists?.[0]?.name || "Unknown Artist",
+            artist: t.artists?.[0]?.name || "Unknown",
             albumArt: t.album?.images?.[0]?.url || "https://picsum.photos/300/300",
           }));
-
           setSearchResults(spotifyResults);
           setIsSearching(false);
           return;
@@ -581,10 +858,9 @@ export default function App() {
       }
     }
 
-    // 2) Fallback: Gemini AI / Mock data
+    // Fallback
     try {
       const aiMatched = await searchMusicAI(searchQuery);
-
       const results: Song[] =
         aiMatched.length > 0
           ? aiMatched.map((s, idx) => ({
@@ -602,106 +878,86 @@ export default function App() {
             );
 
       setSearchResults(results);
-    } catch (e: any) {
-      console.error("AI search failed:", e);
-      setSearchError("Search failed. Try again.");
     } finally {
       setIsSearching(false);
     }
   };
 
-  // --- LISTENING SYNC (host controls index via Firebase) ---
-  const setListeningIndexSynced = async (idx: number) => {
-    if (!isHost) return;
-    await syncUpdate({ listeningIndex: idx } as any);
-  };
+  const startVoting = () => syncUpdate({ phase: GamePhase.VOTING });
 
-  const startVoting = async () => {
-    await syncUpdate({ phase: GamePhase.VOTING } as any);
-  };
-
-  // --- SAFE GUESS SUBMIT (transaction to prevent lost guesses) ---
+  // SUBMIT GUESS (transaction => no lost guesses)
   const submitGuess = async (submissionId: string, targetPlayerId: string) => {
-    if (!db || !gameState.roomId || !currentPlayerId) return;
+    if (!currentPlayerId || !db || !gameState.roomId) return;
 
     const roomRef = ref(db, `rooms/${gameState.roomId}`);
 
-    try {
-      await runTransaction(roomRef, (room: any) => {
-        if (!room) return room;
+    await runTransaction(roomRef, (room: any) => {
+      if (!room) return room;
 
-        const guesses = room.guesses || [];
-        const filtered = guesses.filter(
-          (g: any) =>
-            !(
-              g.voterId === currentPlayerId &&
-              g.submissionId === submissionId
-            )
-        );
-
-        room.guesses = [
-          ...filtered,
-          { voterId: currentPlayerId, submissionId, targetPlayerId },
-        ];
-
-        return room;
-      });
-    } catch (e: any) {
-      console.error("Submit guess failed:", e);
-      alert(`Guess failed: ${e?.message || e}`);
-    }
+      room.guesses = room.guesses || [];
+      // remove prior guess for this voter+submission
+      room.guesses = room.guesses.filter(
+        (g: any) => !(g.voterId === currentPlayerId && g.submissionId === submissionId)
+      );
+      room.guesses.push({ voterId: currentPlayerId, submissionId, targetPlayerId });
+      return room;
+    });
   };
 
-  const finalizeGuesses = async () => {
-    await syncUpdate({ phase: GamePhase.REVEAL } as any);
-  };
+  const finalizeGuesses = () => syncUpdate({ phase: GamePhase.REVEAL });
 
-  const nextReveal = async () => {
+  const nextReveal = () => {
     const isLast =
       gameState.currentRevealIndex >= (gameState.submissions?.length || 0) - 1;
 
     if (isLast) {
-      // Score awarding: +10 per correct guess
-      const updatedPlayers = (gameState.players || []).map((p) => {
-        const correctGuessesCount = (gameState.guesses || []).filter((g) => {
-          if (g.voterId !== p.id) return false;
-          const submissionOwnerId = gameState.submissions.find(
-            (s) => s.song.id === g.submissionId
-          )?.playerId;
-          return submissionOwnerId === g.targetPlayerId;
-        }).length;
-
+      const updatedPlayers = gameState.players.map((p) => {
+        const correctGuessesCount = gameState.guesses
+          ? gameState.guesses.filter((g) => {
+              if (g.voterId !== p.id) return false;
+              const ownerId = gameState.submissions.find(
+                (s) => s.song.id === g.submissionId
+              )?.playerId;
+              return ownerId === g.targetPlayerId;
+            }).length
+          : 0;
         return { ...p, score: p.score + correctGuessesCount * 10 };
       });
-
-      await syncUpdate({ players: updatedPlayers, phase: GamePhase.SCOREBOARD } as any);
+      syncUpdate({ players: updatedPlayers, phase: GamePhase.SCOREBOARD });
     } else {
-      await syncUpdate({ currentRevealIndex: gameState.currentRevealIndex + 1 } as any);
+      syncUpdate({ currentRevealIndex: gameState.currentRevealIndex + 1 });
     }
   };
 
-  const nextQuestion = async () => {
+  const nextQuestion = () => {
     setSearchQuery("");
     setSearchResults([]);
-
     const isGameEnd = gameState.currentQuestionIndex >= 9;
     if (isGameEnd) {
-      await syncUpdate({ phase: GamePhase.FINAL } as any);
+      syncUpdate({ phase: GamePhase.FINAL });
     } else {
-      await syncUpdate({
+      syncUpdate({
         currentQuestionIndex: gameState.currentQuestionIndex + 1,
         phase: GamePhase.PROMPT,
         submissions: [],
         guesses: [],
         currentRevealIndex: 0,
-        listeningIndex: 0 as any,
-      } as any);
+        listeningIndex: 0,
+      });
     }
   };
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
     alert("Copied to clipboard!");
+  };
+
+  // LISTENING NAV (host syncs index to Firebase so guests follow)
+  const listeningIndex = gameState.listeningIndex ?? 0;
+
+  const setListeningIndexSynced = (idx: number) => {
+    if (!isHost) return;
+    syncUpdate({ listeningIndex: idx });
   };
 
   // --- VIEWS ---
@@ -715,6 +971,7 @@ export default function App() {
               <Music size={48} className="text-black" />
             </div>
           </div>
+
           <div>
             <h1 className="text-4xl font-black tracking-tight mb-2 uppercase italic">
               Tune Trivia
@@ -723,41 +980,60 @@ export default function App() {
               The social music guessing game.
             </p>
           </div>
-          <div className="space-y-4">
+
+          {/* Recommended: connect Spotify before hosting */}
+          <div className="space-y-3">
+            {!spotifyConnected ? (
+              <Button
+                onClick={connectSpotify}
+                className="w-full py-4 text-lg uppercase tracking-widest"
+              >
+                Connect Spotify
+              </Button>
+            ) : (
+              <div className="p-3 rounded-xl border border-[#1DB954]/30 bg-[#1DB954]/10 text-[#1DB954] font-bold text-sm">
+                Spotify connected ✅
+              </div>
+            )}
+
             <Button
               onClick={createRoom}
               className="w-full py-4 text-lg uppercase tracking-widest"
+              disabled={!spotifyConnected}
             >
               Host a Party
             </Button>
-            <div className="relative py-2">
-              <div className="absolute inset-0 flex items-center">
-                <span className="w-full border-t border-[#282828]"></span>
-              </div>
-              <div className="relative flex justify-center text-xs uppercase font-bold">
-                <span className="bg-[#181818] px-3 text-gray-500">Or Join</span>
-              </div>
+          </div>
+
+          <div className="relative py-2">
+            <div className="absolute inset-0 flex items-center">
+              <span className="w-full border-t border-[#282828]"></span>
             </div>
-            <div className="flex flex-col gap-3">
-              <input
-                type="text"
-                value={playerName}
-                onChange={(e) => setPlayerName(e.target.value)}
-                placeholder="YOUR NAME"
-                className="w-full bg-[#282828] border-2 border-transparent focus:border-[#1DB954] outline-none rounded-full px-6 py-3 text-center font-bold text-white placeholder:text-gray-500"
-              />
-              <input
-                type="text"
-                value={roomCodeInput}
-                onChange={(e) => setRoomCodeInput(e.target.value)}
-                placeholder="ROOM CODE (e.g. AB12)"
-                className="w-full bg-[#282828] border-2 border-transparent focus:border-[#1DB954] outline-none rounded-full px-6 py-3 text-center font-black tracking-[0.3em] uppercase text-xl placeholder:tracking-normal placeholder:font-bold"
-              />
-              <Button variant="outline" onClick={joinRoom}>
-                Join Room
-              </Button>
+            <div className="relative flex justify-center text-xs uppercase font-bold">
+              <span className="bg-[#181818] px-3 text-gray-500">Or Join</span>
             </div>
           </div>
+
+          <div className="flex flex-col gap-3">
+            <input
+              type="text"
+              value={playerName}
+              onChange={(e) => setPlayerName(e.target.value)}
+              placeholder="YOUR NAME"
+              className="w-full bg-[#282828] border-2 border-transparent focus:border-[#1DB954] outline-none rounded-full px-6 py-3 text-center font-bold text-white placeholder:text-gray-500"
+            />
+            <input
+              type="text"
+              value={roomCodeInput}
+              onChange={(e) => setRoomCodeInput(e.target.value)}
+              placeholder="ROOM CODE (e.g. AB12)"
+              className="w-full bg-[#282828] border-2 border-transparent focus:border-[#1DB954] outline-none rounded-full px-6 py-3 text-center font-black tracking-[0.3em] uppercase text-xl placeholder:tracking-normal placeholder:font-bold"
+            />
+            <Button variant="outline" onClick={joinRoom}>
+              Join Room
+            </Button>
+          </div>
+
           {!db && (
             <div className="p-4 bg-red-900/20 border border-red-500/50 rounded-xl flex items-center gap-2 text-xs text-red-400">
               <AlertCircle size={16} />
@@ -782,16 +1058,14 @@ export default function App() {
             </h2>
             <p className="text-gray-400">Share this code with your friends!</p>
           </div>
+
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
             {gameState.players.map((p) => (
               <div
                 key={p.id}
                 className="bg-[#181818] p-6 rounded-3xl border border-[#282828] flex flex-col items-center gap-4 animate-in zoom-in"
               >
-                <img
-                  src={p.avatar}
-                  className="w-20 h-20 rounded-full border-4 border-[#282828]"
-                />
+                <img src={p.avatar} className="w-20 h-20 rounded-full border-4 border-[#282828]" />
                 <span className="font-bold text-xl">{p.name}</span>
                 {p.isHost && (
                   <span className="text-[10px] bg-[#1DB954] text-black px-2 py-1 rounded font-black uppercase">
@@ -801,6 +1075,7 @@ export default function App() {
               </div>
             ))}
           </div>
+
           <div className="flex justify-center pt-8">
             {isHost ? (
               <Button
@@ -824,19 +1099,23 @@ export default function App() {
   }
 
   const hasSubmitted = gameState.submissions?.some(
-    (s) => s.playerId === currentPlayerId
+    (s: any) => s.playerId === currentPlayerId
   );
   const mysterySubmissions =
-    gameState.submissions?.filter((s) => s.playerId !== currentPlayerId) || [];
+    gameState.submissions?.filter((s: any) => s.playerId !== currentPlayerId) ||
+    [];
   const playerGuessesForRound =
-    gameState.guesses?.filter((g) => g.voterId === currentPlayerId) || [];
+    gameState.guesses?.filter((g: any) => g.voterId === currentPlayerId) || [];
   const allGuessesCompleted =
     mysterySubmissions.length > 0 &&
-    mysterySubmissions.every((s) =>
-      playerGuessesForRound.some((g) => g.submissionId === s.song.id)
+    mysterySubmissions.every((s: any) =>
+      playerGuessesForRound.some((g: any) => g.submissionId === s.song.id)
     );
 
-  const listeningIndex = (gameState as any).listeningIndex ?? 0;
+  // Avoid mutating state arrays by sorting copies
+  const sortedPlayers = useMemo(() => {
+    return [...gameState.players].sort((a, b) => b.score - a.score);
+  }, [gameState.players]);
 
   return (
     <div className="min-h-screen bg-[#121212] text-white flex flex-col selection:bg-[#1DB954] selection:text-black">
@@ -854,6 +1133,7 @@ export default function App() {
             </span>
           )}
         </div>
+
         <div className="flex items-center gap-3 sm:gap-4">
           <div className="px-3 sm:px-4 py-1.5 sm:py-2 bg-[#1DB954]/10 text-[#1DB954] rounded-full text-xs sm:text-sm font-black border border-[#1DB954]/20 flex items-center gap-2">
             <Users size={14} />
@@ -877,26 +1157,34 @@ export default function App() {
             >
               <X size={24} />
             </button>
+
             <div className="flex items-center gap-3 text-[#1DB954]">
               <Settings size={28} />
               <h2 className="text-2xl font-black uppercase tracking-tight italic">
                 Dev Dashboard
               </h2>
             </div>
+
             <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
               <div className="p-6 bg-black rounded-3xl border border-[#282828] space-y-5">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-gray-300">
                     <Music size={18} className="text-[#1DB954]" />
                     <span className="text-sm font-black uppercase tracking-widest">
-                      Spotify API
+                      Spotify API (PKCE)
                     </span>
                   </div>
+
                   <button
                     onClick={() => {
                       setSpotifyToken(null);
-                      localStorage.removeItem("spotify_access_token");
+                      setSpotifyRefreshToken(null);
+                      setSpotifyExpiresAt(0);
                       setSpotifyConnected(false);
+
+                      localStorage.removeItem("spotify_access_token");
+                      localStorage.removeItem("spotify_refresh_token");
+                      localStorage.removeItem("spotify_expires_at");
                     }}
                     className="text-xs text-red-500 underline uppercase font-bold"
                   >
@@ -946,7 +1234,33 @@ export default function App() {
                     className="w-full bg-[#121212] border border-[#282828] focus:border-[#1DB954] outline-none rounded-xl px-4 py-3 text-sm font-mono text-[#1DB954]"
                   />
                 </div>
+
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
+                    Token status
+                  </label>
+                  <div className="text-xs text-gray-400">
+                    {spotifyConnected ? (
+                      <>
+                        Connected ✅{" "}
+                        {spotifyExpiresAt ? (
+                          <span className="text-gray-500">
+                            (expires{" "}
+                            {Math.max(
+                              0,
+                              Math.floor((spotifyExpiresAt - Date.now()) / 1000)
+                            )}
+                            s)
+                          </span>
+                        ) : null}
+                      </>
+                    ) : (
+                      "Not connected"
+                    )}
+                  </div>
+                </div>
               </div>
+
               <div className="flex gap-3">
                 <Button
                   onClick={connectSpotify}
@@ -1103,17 +1417,21 @@ export default function App() {
                 <h2 className="text-5xl sm:text-7xl font-black tracking-tighter uppercase italic leading-none">
                   Party Mix
                 </h2>
+                {isHost && (
+                  <p className="text-xs text-gray-500">
+                    Host playback uses Spotify Web Playback SDK (Premium required).
+                  </p>
+                )}
               </div>
 
               <div className="relative max-w-4xl mx-auto">
                 <div className="bg-[#181818] border border-[#282828] rounded-[4rem] p-10 sm:p-16 flex flex-col md:flex-row items-center gap-12 shadow-[0_40px_100px_rgba(0,0,0,0.8)] relative overflow-hidden group">
                   <div className="absolute inset-0 bg-gradient-to-br from-[#1DB954]/5 to-transparent opacity-50"></div>
-
                   <div className="relative shrink-0">
                     <div className="w-48 h-48 sm:w-64 sm:h-64 rounded-full bg-black border-[10px] border-[#181818] shadow-2xl relative flex items-center justify-center animate-[spin_6s_linear_infinite]">
                       <div className="absolute inset-4 rounded-full border-2 border-white/5"></div>
                       <div className="absolute inset-10 rounded-full border-2 border-white/5"></div>
-                      {gameState.submissions?.[listeningIndex] && (
+                      {gameState.submissions[listeningIndex] && (
                         <img
                           src={gameState.submissions[listeningIndex].song.albumArt}
                           className="w-20 h-20 sm:w-32 sm:h-32 rounded-full border-4 border-black"
@@ -1121,9 +1439,8 @@ export default function App() {
                       )}
                     </div>
                   </div>
-
                   <div className="flex-1 text-center md:text-left space-y-4 relative z-10">
-                    {gameState.submissions?.[listeningIndex] && (
+                    {gameState.submissions[listeningIndex] && (
                       <>
                         <p className="text-[#1DB954] font-black uppercase tracking-[0.4em] text-xs italic">
                           Track {listeningIndex + 1} of {gameState.submissions.length}
@@ -1149,7 +1466,7 @@ export default function App() {
                       <ChevronRight size={32} className="rotate-180" />
                     </button>
 
-                    {listeningIndex < (gameState.submissions?.length || 0) - 1 ? (
+                    {listeningIndex < gameState.submissions.length - 1 ? (
                       <Button
                         onClick={() => setListeningIndexSynced(listeningIndex + 1)}
                         className="flex-1 py-6 text-2xl"
@@ -1168,13 +1485,10 @@ export default function App() {
                     <button
                       onClick={() =>
                         setListeningIndexSynced(
-                          Math.min(
-                            (gameState.submissions?.length || 1) - 1,
-                            listeningIndex + 1
-                          )
+                          Math.min(gameState.submissions.length - 1, listeningIndex + 1)
                         )
                       }
-                      disabled={listeningIndex === (gameState.submissions?.length || 1) - 1}
+                      disabled={listeningIndex === gameState.submissions.length - 1}
                       className="p-6 bg-[#282828] hover:bg-[#3e3e3e] rounded-full text-white disabled:opacity-20 transition-all"
                     >
                       <ChevronRight size={32} />
@@ -1199,12 +1513,13 @@ export default function App() {
                   Who curated these selections?
                 </p>
               </div>
+
               <div className="grid lg:grid-cols-2 gap-8">
-                {gameState.submissions.map((sub) => {
+                {gameState.submissions.map((sub: any) => {
                   if (sub.playerId === currentPlayerId) return null;
 
                   const currentGuess = gameState.guesses
-                    ? gameState.guesses.find(
+                    ? (gameState.guesses as any[]).find(
                         (g) =>
                           g.voterId === currentPlayerId &&
                           g.submissionId === sub.song.id
@@ -1267,6 +1582,7 @@ export default function App() {
                   );
                 })}
               </div>
+
               <div className="flex justify-center pt-12">
                 {isHost ? (
                   <Button
@@ -1291,8 +1607,10 @@ export default function App() {
               const currentSub = gameState.submissions[gameState.currentRevealIndex];
               if (!currentSub) return <div>Loading reveal...</div>;
 
-              const owner = gameState.players.find((p) => p.id === currentSub.playerId);
-              const allGuesses = gameState.guesses || [];
+              const owner = gameState.players.find(
+                (p) => p.id === currentSub.playerId
+              );
+              const allGuesses = (gameState.guesses || []) as any[];
               const guessesForSub = allGuesses.filter(
                 (g) => g.submissionId === currentSub.song.id
               );
@@ -1311,6 +1629,7 @@ export default function App() {
                         Reveal #{gameState.currentRevealIndex + 1}
                       </span>
                     </div>
+
                     <div className="flex flex-col items-center">
                       <div className="relative group mb-10">
                         <div className="absolute inset-0 bg-[#1DB954] blur-[80px] opacity-20 rounded-full animate-pulse"></div>
@@ -1351,8 +1670,13 @@ export default function App() {
                                   src={player?.avatar}
                                   className="w-10 h-10 rounded-full border-2 border-[#1DB954]"
                                 />
-                                <span className="font-bold text-lg">{player?.name}</span>
-                                <Check className="ml-auto text-[#1DB954]" size={20} />
+                                <span className="font-bold text-lg">
+                                  {player?.name}
+                                </span>
+                                <Check
+                                  className="ml-auto text-[#1DB954]"
+                                  size={20}
+                                />
                               </div>
                             );
                           })
@@ -1431,8 +1755,7 @@ export default function App() {
                         onClick={nextReveal}
                         className="px-32 py-8 text-3xl font-black rounded-full bg-white text-black hover:bg-gray-100 transition-all hover:scale-105 shadow-2xl uppercase italic tracking-tighter"
                       >
-                        {gameState.currentRevealIndex <
-                        gameState.submissions.length - 1
+                        {gameState.currentRevealIndex < gameState.submissions.length - 1
                           ? "NEXT REVEAL"
                           : "FINAL SCORES"}{" "}
                         <ChevronRight size={48} className="inline-block ml-4" />
