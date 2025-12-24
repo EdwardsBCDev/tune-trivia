@@ -194,7 +194,7 @@ export default function App() {
     return v ? Number(v) : 0;
   });
 
-  // Keep a ref so WebPlayback getOAuthToken always uses latest token
+  // Keep a ref so playback always uses latest token
   const spotifyTokenRef = useRef<string | null>(spotifyToken);
   useEffect(() => {
     spotifyTokenRef.current = spotifyToken;
@@ -438,7 +438,7 @@ export default function App() {
   }, [spotifyExpiresAt, spotifyClientId, spotifyRefreshToken]);
 
   // ------------------------------------------------------------------
-  // SPOTIFY WEB PLAYBACK SDK (host-only playback)
+  // SPOTIFY WEB PLAYBACK SDK (host-only playback) + FALLBACK
   // ------------------------------------------------------------------
 
   // Load SDK script once
@@ -477,6 +477,36 @@ export default function App() {
       });
     } catch (e) {
       console.error("Transfer playback failed:", e);
+    }
+  };
+
+  // ✅ NEW: Fallback playback via active Spotify device (desktop app / phone / etc.)
+  // This is the most reliable "party night" playback.
+  const playOnActiveSpotifyDevice = async (spotifyTrackId: string) => {
+    const token = spotifyTokenRef.current;
+    if (!token) return;
+
+    try {
+      const res = await fetch("https://api.spotify.com/v1/me/player/play", {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          uris: [`spotify:track:${spotifyTrackId}`],
+        }),
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        console.warn("Active-device play failed:", res.status, txt);
+        if (res.status === 401) {
+          await refreshSpotifyToken();
+        }
+      }
+    } catch (e) {
+      console.error("Active-device play error:", e);
     }
   };
 
@@ -534,37 +564,42 @@ export default function App() {
   const playTrackOnHost = async (spotifyTrackId: string) => {
     const token = spotifyTokenRef.current;
     const deviceId = deviceIdRef.current;
-    if (!token || !deviceId) return;
 
-    try {
-      const res = await fetch(
-        `https://api.spotify.com/v1/me/player/play?device_id=${encodeURIComponent(
-          deviceId
-        )}`,
-        {
-          method: "PUT",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            uris: [`spotify:track:${spotifyTrackId}`],
-          }),
-        }
-      );
+    // ✅ If SDK device exists, try it first
+    if (token && deviceId) {
+      try {
+        const res = await fetch(
+          `https://api.spotify.com/v1/me/player/play?device_id=${encodeURIComponent(
+            deviceId
+          )}`,
+          {
+            method: "PUT",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              uris: [`spotify:track:${spotifyTrackId}`],
+            }),
+          }
+        );
 
-      if (!res.ok) {
+        if (res.ok) return;
+
         const txt = await res.text().catch(() => "");
-        console.warn("Play failed:", res.status, txt);
+        console.warn("SDK play failed, falling back:", res.status, txt);
 
         // If token expired unexpectedly, attempt refresh once
         if (res.status === 401) {
           await refreshSpotifyToken();
         }
+      } catch (e) {
+        console.error("SDK play track error:", e);
       }
-    } catch (e) {
-      console.error("Play track error:", e);
     }
+
+    // ✅ NEW: Fallback to active Spotify device (desktop app is usually active)
+    await playOnActiveSpotifyDevice(spotifyTrackId);
   };
 
   // Auto-play when host changes listeningIndex in LISTENING
@@ -913,10 +948,10 @@ export default function App() {
     if (isLast) {
       const updatedPlayers = gameState.players.map((p) => {
         const correctGuessesCount = gameState.guesses
-          ? gameState.guesses.filter((g) => {
+          ? gameState.guesses.filter((g: any) => {
               if (g.voterId !== p.id) return false;
               const ownerId = gameState.submissions.find(
-                (s) => s.song.id === g.submissionId
+                (s: any) => s.song.id === g.submissionId
               )?.playerId;
               return ownerId === g.targetPlayerId;
             }).length
@@ -1417,7 +1452,7 @@ export default function App() {
                 </h2>
                 {isHost && (
                   <p className="text-xs text-gray-500">
-                    Host playback uses Spotify Web Playback SDK (Premium required).
+                    Host playback uses Spotify (SDK first, then falls back to your active Spotify device).
                   </p>
                 )}
               </div>
