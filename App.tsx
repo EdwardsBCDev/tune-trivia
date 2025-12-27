@@ -54,6 +54,52 @@ const firebaseConfig = {
 const app = firebaseConfig.apiKey ? initializeApp(firebaseConfig) : null;
 const db = app ? getDatabase(app) : null;
 
+// ---------------------------
+// Error Boundary (prevents blank screen)
+// ---------------------------
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; message?: string; stack?: string }
+> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError(err: any) {
+    return { hasError: true, message: String(err?.message || err) };
+  }
+  componentDidCatch(err: any) {
+    this.setState({ stack: String(err?.stack || "") });
+    console.error("UI crashed:", err);
+  }
+  render() {
+    if (!this.state.hasError) return this.props.children;
+    return (
+      <div className="min-h-screen bg-[#121212] text-white p-6">
+        <div className="max-w-3xl mx-auto bg-[#181818] border border-red-500/40 rounded-2xl p-6 space-y-4">
+          <div className="text-red-400 font-black text-2xl">App crashed</div>
+          <div className="text-gray-200 font-mono whitespace-pre-wrap">
+            {this.state.message}
+          </div>
+          {this.state.stack && (
+            <div className="text-gray-500 text-xs font-mono whitespace-pre-wrap">
+              {this.state.stack}
+            </div>
+          )}
+          <div className="pt-2">
+            <button
+              className="px-6 py-3 rounded-full bg-white text-black font-bold"
+              onClick={() => window.location.reload()}
+            >
+              Reload
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
+
 // --- UI Components ---
 const Button: React.FC<{
   onClick?: () => void;
@@ -118,7 +164,8 @@ const sha256 = async (plain: string) => {
 };
 
 const randomString = (length = 64) => {
-  const possible = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const possible =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   const values = crypto.getRandomValues(new Uint8Array(length));
   return Array.from(values)
     .map((v) => possible[v % possible.length])
@@ -134,9 +181,14 @@ type SpotifyDevice = {
 };
 
 type Submission = { playerId: string; song: Song; roundId: number };
-type Guess = { voterId: string; submissionId: string; targetPlayerId: string; roundId: number };
+type Guess = {
+  voterId: string;
+  submissionId: string;
+  targetPlayerId: string;
+  roundId: number;
+};
 
-export default function App() {
+function AppInner() {
   // --- Local UI State ---
   const [roomCodeInput, setRoomCodeInput] = useState("");
   const [currentPlayerId, setCurrentPlayerId] = useState<string | null>(() =>
@@ -147,7 +199,9 @@ export default function App() {
   );
 
   // --- Game State ---
-  const [gameState, setGameState] = useState<GameState & { roundId?: number }>({
+  const [gameState, setGameState] = useState<
+    (GameState & { roundId?: number; hostToken?: string }) | any
+  >({
     roomId: "",
     phase: GamePhase.LOBBY,
     currentQuestionIndex: 0,
@@ -159,21 +213,21 @@ export default function App() {
     roundId: 0,
   });
 
-  const roundId = gameState.roundId ?? 0;
+  const roundId: number = typeof gameState.roundId === "number" ? gameState.roundId : 0;
 
+  // --- Search ---
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Song[]>([]);
   const [isSearching, setIsSearching] = useState(false);
-  const [isAnnouncing, setIsAnnouncing] = useState(false);
-
-  // Listening UI
-  const [listeningIndex, setListeningIndex] = useState(0);
-
-  // Settings
-  const [showSettings, setShowSettings] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  // Spotify config + tokens
+  // --- Settings ---
+  const [showSettings, setShowSettings] = useState(false);
+
+  // --- Listening UI ---
+  const [listeningIndex, setListeningIndex] = useState(0);
+
+  // --- Spotify config + tokens ---
   const [spotifyClientId, setSpotifyClientId] = useState(() =>
     import.meta.env.VITE_SPOTIFY_CLIENT_ID ||
     localStorage.getItem("spotify_client_id") ||
@@ -182,23 +236,25 @@ export default function App() {
   const [manualRedirectUri, setManualRedirectUri] = useState(
     () => localStorage.getItem("spotify_redirect_uri_override") || ""
   );
-
   const [spotifyToken, setSpotifyToken] = useState<string | null>(() =>
     localStorage.getItem("spotify_access_token")
   );
   const [hostToken, setHostToken] = useState<string | null>(null);
 
-  // Device selection
+  // Devices
   const [detectedDevices, setDetectedDevices] = useState<SpotifyDevice[]>([]);
   const [preferredDeviceId, setPreferredDeviceId] = useState(
     () => localStorage.getItem("spotify_preferred_device_id") || ""
   );
 
-  // Refs
+  // --- Audio announcements ---
+  const [isAnnouncing, setIsAnnouncing] = useState(false);
+  const audioContextRef = useRef<AudioContext | null>(null);
+
+  // --- Refs ---
   const spotifyTokenRef = useRef<string | null>(spotifyToken);
   const spotifyClientIdRef = useRef<string>(spotifyClientId);
   const lastUsedDeviceIdRef = useRef<string | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
 
   useEffect(() => {
     spotifyTokenRef.current = spotifyToken;
@@ -212,6 +268,14 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("spotify_redirect_uri_override", manualRedirectUri);
   }, [manualRedirectUri]);
+
+  // Ensure we keep a playerId if sessionStorage exists
+  useEffect(() => {
+    if (!currentPlayerId) {
+      const existing = sessionStorage.getItem("tune_player_id");
+      if (existing) setCurrentPlayerId(existing);
+    }
+  }, [currentPlayerId]);
 
   // --- Redirect URI logic ---
   const suggestedRedirectUri = useMemo(() => {
@@ -237,40 +301,81 @@ export default function App() {
     return a;
   };
 
-  // ✅ round-scoped submission key
-  const submissionKey = (songId: string, rid = roundId) => `${rid}:${songId}`;
+  const submissionKey = (songId: string, rid: number) => `${rid}:${songId}`;
 
-  // --- Firebase sync ---
+  // --- Firebase room ref ---
+  const roomRef = useMemo(() => {
+    if (!db || !gameState.roomId) return null;
+    return ref(db, `rooms/${gameState.roomId}`);
+  }, [db, gameState.roomId]);
+
+  // --- Firebase sync (SANITISE to prevent crashes / blank screens) ---
   useEffect(() => {
     if (!gameState.roomId || !db) return;
 
-    const roomRef = ref(db, `rooms/${gameState.roomId}`);
-    const unsub = onValue(roomRef, (snapshot) => {
+    const rRef = ref(db, `rooms/${gameState.roomId}`);
+    const unsub = onValue(rRef, (snapshot) => {
       const data = snapshot.val();
       if (!data) return;
 
-      // ✅ IMPORTANT: replace, don’t “merge arrays and keep stale ones”
-      setGameState((prev) => ({
+      const safePlayers = Array.isArray(data.players) ? data.players : [];
+
+      const safeSubmissions: Submission[] = Array.isArray(data.submissions)
+        ? data.submissions
+            .filter((s: any) => s && typeof s === "object")
+            .filter((s: any) => s.playerId && s.song && typeof s.song === "object")
+            .filter((s: any) => typeof s.song.id === "string" && typeof s.song.title === "string")
+            .map((s: any) => ({
+              playerId: String(s.playerId),
+              song: {
+                id: String(s.song.id),
+                title: String(s.song.title),
+                artist: String(s.song.artist || "Unknown"),
+                albumArt: String(s.song.albumArt || "https://picsum.photos/300/300"),
+              },
+              roundId: typeof s.roundId === "number" ? s.roundId : 0,
+            }))
+        : [];
+
+      const safeGuesses: Guess[] = Array.isArray(data.guesses)
+        ? data.guesses
+            .filter((g: any) => g && typeof g === "object")
+            .filter((g: any) => g.voterId && g.submissionId && g.targetPlayerId)
+            .map((g: any) => ({
+              voterId: String(g.voterId),
+              submissionId: String(g.submissionId),
+              targetPlayerId: String(g.targetPlayerId),
+              roundId: typeof g.roundId === "number" ? g.roundId : 0,
+            }))
+        : [];
+
+      const safeQuestions =
+        Array.isArray(data.questions) && data.questions.length
+          ? data.questions
+          : INITIAL_QUESTIONS;
+
+      setGameState((prev: any) => ({
         ...prev,
         ...data,
-        submissions: Array.isArray(data.submissions) ? data.submissions : [],
-        guesses: Array.isArray(data.guesses) ? data.guesses : [],
-        players: Array.isArray(data.players) ? data.players : [],
-        questions: Array.isArray(data.questions) ? data.questions : INITIAL_QUESTIONS,
+        players: safePlayers,
+        submissions: safeSubmissions,
+        guesses: safeGuesses,
+        questions: safeQuestions,
         roundId: typeof data.roundId === "number" ? data.roundId : (prev.roundId ?? 0),
       }));
 
-      if (data.hostToken) setHostToken(data.hostToken);
+      if (data.hostToken) setHostToken(String(data.hostToken));
     });
 
     return () => unsub();
   }, [gameState.roomId]);
 
-  const myPlayer = gameState.players.find((p) => p.id === currentPlayerId);
-  const isHost = myPlayer?.isHost;
+  // --- Host detection ---
+  const myPlayer = gameState.players.find((p: Player) => p.id === currentPlayerId);
+  const isHost = !!myPlayer?.isHost;
 
+  // Reset local UI bits on round change
   useEffect(() => {
-    // local UI reset when round changes
     setSearchQuery("");
     setSearchResults([]);
     setSearchError(null);
@@ -284,7 +389,9 @@ export default function App() {
     }
   }, [isHost, spotifyToken, gameState.roomId]);
 
-  // --- Audio announcements (Gemini) ---
+  // ---------------------------
+  // AUDIO (announcements)
+  // ---------------------------
   const initAudio = () => {
     if (!audioContextRef.current) {
       audioContextRef.current = new (window.AudioContext ||
@@ -302,7 +409,6 @@ export default function App() {
 
     try {
       const base64Data = await generateAnnouncementAudio(song.title, song.artist, pName);
-
       if (base64Data && audioContextRef.current) {
         const audioData = decodeBase64(base64Data);
         const audioBuffer = await decodeAudioData(audioData, audioContextRef.current);
@@ -319,19 +425,8 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    if (gameState.phase === GamePhase.REVEAL) {
-      const currentSub = (gameState.submissions as any[])[gameState.currentRevealIndex] as Submission | undefined;
-      if (!currentSub) return;
-
-      const player = gameState.players.find((p) => p.id === currentSub.playerId);
-      if (player) playAnnouncement(currentSub.song, player.name);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gameState.phase, gameState.currentRevealIndex]);
-
   // ---------------------------
-  // ✅ SPOTIFY AUTH (PKCE)
+  // SPOTIFY AUTH (PKCE)
   // ---------------------------
   const connectSpotify = async () => {
     if (!spotifyClientIdRef.current) {
@@ -348,10 +443,7 @@ export default function App() {
 
     localStorage.setItem("spotify_pkce_verifier", verifier);
     localStorage.setItem("spotify_redirect_uri_used", finalUri);
-    localStorage.setItem(
-      "spotify_post_auth_path",
-      window.location.pathname + window.location.search
-    );
+    localStorage.setItem("spotify_post_auth_path", window.location.pathname + window.location.search);
 
     const scopes = [
       "user-read-playback-state",
@@ -362,9 +454,7 @@ export default function App() {
     ].join(" ");
 
     const authUrl =
-      `${SPOTIFY_AUTH_ENDPOINT}?client_id=${encodeURIComponent(
-        spotifyClientIdRef.current
-      )}` +
+      `${SPOTIFY_AUTH_ENDPOINT}?client_id=${encodeURIComponent(spotifyClientIdRef.current)}` +
       `&response_type=code` +
       `&redirect_uri=${encodeURIComponent(finalUri)}` +
       `&scope=${encodeURIComponent(scopes)}` +
@@ -422,6 +512,18 @@ export default function App() {
       return refreshed || spotifyTokenRef.current;
     }
     return token;
+  };
+
+  const spotifyFetch = async (url: string, init?: RequestInit) => {
+    const token = await ensureValidSpotifyToken();
+    if (!token) throw new Error("NoSpotifyToken");
+    return fetch(url, {
+      ...init,
+      headers: {
+        ...(init?.headers || {}),
+        Authorization: `Bearer ${token}`,
+      },
+    });
   };
 
   useEffect(() => {
@@ -482,21 +584,7 @@ export default function App() {
     exchange();
   }, []);
 
-  // ---------------------------
-  // ✅ Spotify Web API helpers
-  // ---------------------------
-  const spotifyFetch = async (url: string, init?: RequestInit) => {
-    const token = await ensureValidSpotifyToken();
-    if (!token) throw new Error("NoSpotifyToken");
-    return fetch(url, {
-      ...init,
-      headers: {
-        ...(init?.headers || {}),
-        Authorization: `Bearer ${token}`,
-      },
-    });
-  };
-
+  // Devices
   const fetchDevices = async () => {
     try {
       const res = await spotifyFetch("https://api.spotify.com/v1/me/player/devices");
@@ -533,7 +621,6 @@ export default function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ device_ids: [deviceId], play }),
     });
-
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
       console.warn("transferPlayback failed:", res.status, txt);
@@ -588,13 +675,41 @@ export default function App() {
     }
   };
 
-  // auto play in listening (host only)
+  // ---------------------------
+  // Round-scoped derived arrays (UI)
+  // ---------------------------
+  const submissionsAll: Submission[] = Array.isArray(gameState.submissions) ? gameState.submissions : [];
+  const guessesAll: Guess[] = Array.isArray(gameState.guesses) ? gameState.guesses : [];
+
+  const submissions: Submission[] = submissionsAll.filter((s) => (s.roundId ?? 0) === roundId);
+  const guesses: Guess[] = guessesAll.filter((g) => (g.roundId ?? 0) === roundId);
+
+  const nonHostPlayers = (Array.isArray(gameState.players) ? gameState.players : []).filter(
+    (p: Player) => !p.isHost
+  );
+
+  const submittedIds = new Set(submissions.map((s) => s.playerId));
+  const remainingPlayers = nonHostPlayers.filter((p: Player) => !submittedIds.has(p.id));
+
+  const hasSubmitted = !!currentPlayerId && submissions.some((s) => s.playerId === currentPlayerId);
+
+  const mysterySubmissions = submissions.filter((s) => s.playerId !== currentPlayerId);
+  const myGuesses = guesses.filter((g) => g.voterId === currentPlayerId);
+
+  const allGuessesCompleted =
+    mysterySubmissions.length > 0 &&
+    mysterySubmissions.every((s) =>
+      myGuesses.some((g) => g.submissionId === submissionKey(s.song.id, roundId))
+    );
+
+  // ---------------------------
+  // Host auto-play in Listening (optional but helpful)
+  // ---------------------------
   useEffect(() => {
     if (!isHost) return;
     if (gameState.phase !== GamePhase.LISTENING) return;
 
-    const subs = (gameState.submissions as any[]).filter((s: any) => (s.roundId ?? 0) === roundId) as Submission[];
-    const sub = subs[listeningIndex];
+    const sub = submissions[listeningIndex];
     if (!sub) return;
     if (sub.song.id.startsWith("ai-")) return;
 
@@ -603,19 +718,18 @@ export default function App() {
   }, [isHost, gameState.phase, listeningIndex, roundId]);
 
   // ---------------------------
-  // ✅ GAME ACTIONS (transaction-safe)
+  // GAME ACTIONS
   // ---------------------------
-  const roomRef = useMemo(() => {
-    if (!db || !gameState.roomId) return null;
-    return ref(db, `rooms/${gameState.roomId}`);
-  }, [db, gameState.roomId]);
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    alert("Copied to clipboard!");
+  };
 
   const hardResetRoundState = async (targetPhase: GamePhase, rid: number) => {
     if (!roomRef) return;
-    // ✅ Always write arrays explicitly
     await update(roomRef, {
       phase: targetPhase,
-      submissions: [],
+      submissions: [], // wipe for that round (clients still filter by roundId anyway)
       guesses: [],
       currentRevealIndex: 0,
       roundId: rid,
@@ -627,7 +741,6 @@ export default function App() {
       alert("Firebase not connected! Please check your environment variables.");
       return;
     }
-    initAudio();
 
     const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
     const hostId = "p1_host_" + Date.now();
@@ -654,8 +767,10 @@ export default function App() {
     };
 
     await set(ref(db, `rooms/${newRoomId}`), initialGame);
+
     setCurrentPlayerId(hostId);
     sessionStorage.setItem("tune_player_id", hostId);
+
     setGameState(initialGame);
   };
 
@@ -683,7 +798,7 @@ export default function App() {
 
     await runTransaction(rRef, (room: any) => {
       if (!room) return room;
-      room.players = room.players || [];
+      room.players = Array.isArray(room.players) ? room.players : [];
       if (!room.players.some((p: any) => p.id === newPlayerId)) room.players.push(newPlayer);
       return room;
     });
@@ -691,13 +806,14 @@ export default function App() {
     sessionStorage.setItem("tune_player_id", newPlayerId);
     sessionStorage.setItem("tune_player_name", playerName);
     setCurrentPlayerId(newPlayerId);
+
     setGameState(game);
   };
 
   const startGame = async () => {
     if (!isHost || !roomRef) return;
 
-    const nonHostCount = gameState.players.filter((p) => !p.isHost).length;
+    const nonHostCount = nonHostPlayers.length;
     if (nonHostCount < 2) {
       alert("Need at least 2 players (excluding host) to start!");
       return;
@@ -707,7 +823,9 @@ export default function App() {
     try {
       const generated = await generateTriviaQuestions(10);
       if (generated.length > 0) questions = generated;
-    } catch {}
+    } catch {
+      // fallback
+    }
 
     let shuffled = shuffle(questions);
     const lastFirst = localStorage.getItem("last_first_question") || "";
@@ -716,29 +834,42 @@ export default function App() {
     }
     localStorage.setItem("last_first_question", shuffled[0] || "");
 
-    // ✅ atomic: set questions + reset round state
+    // Start at prompt; host then opens submissions
     await update(roomRef, {
       questions: shuffled,
       currentQuestionIndex: 0,
       roundId: 0,
+      phase: GamePhase.PROMPT,
+      submissions: [],
+      guesses: [],
+      currentRevealIndex: 0,
     });
-    await hardResetRoundState(GamePhase.PROMPT, 0);
+
     setListeningIndex(0);
   };
 
   const openSubmissions = async () => {
-    if (!isHost) return;
+    if (!isHost || !roomRef) return;
     setSearchQuery("");
     setSearchResults([]);
     setSearchError(null);
     setListeningIndex(0);
-    await hardResetRoundState(GamePhase.SUBMITTING, roundId);
+
+    await update(roomRef, {
+      phase: GamePhase.SUBMITTING,
+      // wipe arrays so nobody is "locked" from previous round
+      submissions: [],
+      guesses: [],
+      currentRevealIndex: 0,
+      // keep roundId as-is
+      roundId,
+    });
   };
 
-  // ✅ submitSong transaction-safe and round-safe (host cannot submit)
+  // IMPORTANT: append submissions (do NOT replace array)
   const submitSong = async (song: Song) => {
     if (!roomRef || !currentPlayerId) return;
-    if (isHost) return;
+    if (isHost) return; // host never submits
 
     setSearchQuery("");
     setSearchResults([]);
@@ -748,20 +879,23 @@ export default function App() {
       if (!room) return room;
 
       const rid = typeof room.roundId === "number" ? room.roundId : 0;
-      room.submissions = Array.isArray(room.submissions) ? room.submissions : [];
-      room.players = Array.isArray(room.players) ? room.players : [];
 
-      // only submissions for this round count
+      room.players = Array.isArray(room.players) ? room.players : [];
+      room.submissions = Array.isArray(room.submissions) ? room.submissions : [];
+
+      const playingPlayers = room.players.filter((p: any) => !p.isHost);
+
+      // subs for this round
       const subsThisRound = room.submissions.filter((s: any) => (s.roundId ?? 0) === rid);
 
       // prevent double-submit
       if (subsThisRound.some((s: any) => s.playerId === currentPlayerId)) return room;
 
-      const newSub = { playerId: currentPlayerId, song, roundId: rid };
-      room.submissions = [...subsThisRound, newSub];
+      // ✅ APPEND, do not replace
+      room.submissions.push({ playerId: currentPlayerId, song, roundId: rid });
 
-      const playingPlayers = room.players.filter((p: any) => !p.isHost);
-      if (room.submissions.length >= playingPlayers.length) {
+      const newCount = room.submissions.filter((s: any) => (s.roundId ?? 0) === rid).length;
+      if (newCount >= playingPlayers.length) {
         room.phase = GamePhase.LISTENING;
         room.currentRevealIndex = 0;
       }
@@ -826,14 +960,19 @@ export default function App() {
     setIsSearching(false);
   };
 
+  const forceStartListening = async () => {
+    if (!isHost || !roomRef) return;
+    await update(roomRef, { phase: GamePhase.LISTENING, currentRevealIndex: 0 });
+    setListeningIndex(0);
+  };
+
   const startVoting = async () => {
-    if (!isHost) return;
+    if (!isHost || !roomRef) return;
     await pausePlayback();
-    if (!roomRef) return;
     await update(roomRef, { phase: GamePhase.VOTING });
   };
 
-  // ✅ guess transaction-safe (prevents overwriting someone else's guess)
+  // IMPORTANT: upsert guess (do NOT replace array)
   const submitGuess = async (songId: string, targetPlayerId: string) => {
     if (!roomRef || !currentPlayerId) return;
     if (isHost) return;
@@ -845,15 +984,24 @@ export default function App() {
 
       const rid = typeof room.roundId === "number" ? room.roundId : 0;
       room.guesses = Array.isArray(room.guesses) ? room.guesses : [];
-      const guessesThisRound = room.guesses.filter((g: any) => (g.roundId ?? 0) === rid);
 
-      // upsert per voter + submissionId
-      const filtered = guessesThisRound.filter(
-        (g: any) => !(g.voterId === currentPlayerId && g.submissionId === key)
+      // remove existing guess for this voter+submission+round
+      room.guesses = room.guesses.filter(
+        (g: any) =>
+          !(
+            (g.roundId ?? 0) === rid &&
+            g.voterId === currentPlayerId &&
+            g.submissionId === key
+          )
       );
 
-      const newGuess = { voterId: currentPlayerId, submissionId: key, targetPlayerId, roundId: rid };
-      room.guesses = [...filtered, newGuess];
+      room.guesses.push({
+        voterId: currentPlayerId,
+        submissionId: key,
+        targetPlayerId,
+        roundId: rid,
+      });
+
       return room;
     });
   };
@@ -864,37 +1012,38 @@ export default function App() {
     await update(roomRef, { phase: GamePhase.REVEAL, currentRevealIndex: 0 });
   };
 
-  // ✅ scoring uses round-scoped keys and reads from round-scoped submissions
+  // Reveal announcements
+  useEffect(() => {
+    if (gameState.phase !== GamePhase.REVEAL) return;
+    const currentSub = submissions[gameState.currentRevealIndex];
+    if (!currentSub) return;
+    const owner = (gameState.players as Player[]).find((p) => p.id === currentSub.playerId);
+    if (owner) playAnnouncement(currentSub.song, owner.name);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gameState.phase, gameState.currentRevealIndex, roundId]);
+
   const nextReveal = async () => {
     if (!isHost || !roomRef) return;
 
-    const subsAll = (gameState.submissions as any[]) as Submission[];
-    const subs = subsAll.filter((s) => (s.roundId ?? 0) === roundId);
-
-    const isLast = gameState.currentRevealIndex >= subs.length - 1;
-
+    const isLast = gameState.currentRevealIndex >= submissions.length - 1;
     if (!isLast) {
       await update(roomRef, { currentRevealIndex: gameState.currentRevealIndex + 1 });
       return;
     }
 
-    // End of reveal: calculate scores
-    const guessesAll = (gameState.guesses as any[]) as Guess[];
-    const guesses = guessesAll.filter((g) => (g.roundId ?? 0) === roundId);
-
+    // Score end-of-round (non-host only)
     const ownerByKey = new Map<string, string>();
-    subs.forEach((s) => ownerByKey.set(submissionKey(s.song.id, roundId), s.playerId));
+    submissions.forEach((s) => ownerByKey.set(submissionKey(s.song.id, roundId), s.playerId));
 
-    const updatedPlayers = gameState.players.map((p) => {
+    const updatedPlayers: Player[] = (gameState.players as Player[]).map((p) => {
       if (p.isHost) return p;
 
-      const myGuesses = guesses.filter((g) => g.voterId === p.id);
+      const my = guesses.filter((g) => g.voterId === p.id);
       let correct = 0;
-      for (const g of myGuesses) {
+      for (const g of my) {
         const actualOwner = ownerByKey.get(g.submissionId);
         if (actualOwner && actualOwner === g.targetPlayerId) correct += 1;
       }
-
       return { ...p, score: p.score + correct * 10 };
     });
 
@@ -904,10 +1053,10 @@ export default function App() {
   const nextQuestion = async () => {
     if (!isHost || !roomRef) return;
 
+    await pausePlayback();
     setSearchQuery("");
     setSearchResults([]);
     setListeningIndex(0);
-    await pausePlayback();
 
     const isGameEnd = gameState.currentQuestionIndex >= 9;
     if (isGameEnd) {
@@ -920,48 +1069,29 @@ export default function App() {
     await update(roomRef, {
       currentQuestionIndex: gameState.currentQuestionIndex + 1,
       roundId: newRoundId,
+      // important: return to PROMPT for host to open submissions
+      phase: GamePhase.PROMPT,
+      submissions: [],
+      guesses: [],
+      currentRevealIndex: 0,
     });
-
-    // ✅ this is the key: hard reset arrays for the new round
-    await hardResetRoundState(GamePhase.PROMPT, newRoundId);
   };
 
-  const forceStartListening = async () => {
+  const resetRoomData = async () => {
     if (!isHost || !roomRef) return;
-    await update(roomRef, { phase: GamePhase.LISTENING, currentRevealIndex: 0 });
-    setListeningIndex(0);
+    await update(roomRef, {
+      phase: GamePhase.LOBBY,
+      currentQuestionIndex: 0,
+      roundId: 0,
+      submissions: [],
+      guesses: [],
+      currentRevealIndex: 0,
+    });
+    alert("Room reset ✅");
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    alert("Copied to clipboard!");
-  };
-
   // ---------------------------
-  // Derived round-scoped views
-  // ---------------------------
-  const submissionsAll = (gameState.submissions as any[]) as Submission[];
-  const submissions = submissionsAll.filter((s) => (s.roundId ?? 0) === roundId);
-
-  const guessesAll = (gameState.guesses as any[]) as Guess[];
-  const guesses = guessesAll.filter((g) => (g.roundId ?? 0) === roundId);
-
-  const hasSubmitted = !!currentPlayerId && submissions.some((s) => s.playerId === currentPlayerId);
-
-  const nonHostPlayers = gameState.players.filter((p) => !p.isHost);
-  const submittedIds = new Set(submissions.map((s) => s.playerId));
-  const remainingPlayers = nonHostPlayers.filter((p) => !submittedIds.has(p.id));
-
-  const mysterySubmissions = submissions.filter((s) => s.playerId !== currentPlayerId);
-  const myGuesses = guesses.filter((g) => g.voterId === currentPlayerId);
-  const allGuessesCompleted =
-    mysterySubmissions.length > 0 &&
-    mysterySubmissions.every((s) =>
-      myGuesses.some((g) => g.submissionId === submissionKey(s.song.id, roundId))
-    );
-
-  // ---------------------------
-  // Render start / join
+  // VIEWS
   // ---------------------------
   if (!gameState.roomId) {
     return (
@@ -1018,7 +1148,7 @@ export default function App() {
           {!db && (
             <div className="p-4 bg-red-900/20 border border-red-500/50 rounded-xl flex items-center gap-2 text-xs text-red-400">
               <AlertCircle size={16} />
-              <span>Database not connected. Add API Keys in Coolify.</span>
+              <span>Database not connected. Add API Keys.</span>
             </div>
           )}
         </Card>
@@ -1026,9 +1156,6 @@ export default function App() {
     );
   }
 
-  // ---------------------------
-  // Lobby
-  // ---------------------------
   if (gameState.phase === GamePhase.LOBBY) {
     return (
       <div className="min-h-screen bg-[#121212] text-white flex flex-col items-center justify-center p-6">
@@ -1044,12 +1171,15 @@ export default function App() {
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-6">
-            {gameState.players.map((p) => (
+            {(gameState.players as Player[]).map((p) => (
               <div
                 key={p.id}
                 className="bg-[#181818] p-6 rounded-3xl border border-[#282828] flex flex-col items-center gap-4 animate-in zoom-in"
               >
-                <img src={p.avatar} className="w-20 h-20 rounded-full border-4 border-[#282828]" />
+                <img
+                  src={p.avatar}
+                  className="w-20 h-20 rounded-full border-4 border-[#282828]"
+                />
                 <span className="font-bold text-xl">{p.name}</span>
                 {p.isHost && (
                   <span className="text-[10px] bg-[#1DB954] text-black px-2 py-1 rounded font-black uppercase">
@@ -1068,7 +1198,9 @@ export default function App() {
             ) : (
               <div className="flex items-center gap-3 text-[#1DB954] animate-pulse">
                 <RefreshCw className="animate-spin" />
-                <span className="font-bold uppercase tracking-widest">Waiting for host to start...</span>
+                <span className="font-bold uppercase tracking-widest">
+                  Waiting for host to start...
+                </span>
               </div>
             )}
           </div>
@@ -1078,7 +1210,7 @@ export default function App() {
   }
 
   // ---------------------------
-  // Main shell + settings
+  // Main shell
   // ---------------------------
   return (
     <div className="min-h-screen bg-[#121212] text-white flex flex-col selection:bg-[#1DB954] selection:text-black">
@@ -1088,19 +1220,28 @@ export default function App() {
             <Music size={18} className="text-black" />
           </div>
           <span className="font-black text-xl italic hidden sm:block">Tune Trivia</span>
+
           {(spotifyToken || hostToken) && (
             <span className="text-[10px] bg-[#1DB954]/20 text-[#1DB954] px-2 py-1 rounded font-bold uppercase">
               Spotify Linked
             </span>
           )}
+
+          {/* Debug chip (temporary for tonight) */}
+          <span className="text-[10px] px-2 py-1 rounded bg-white/5 border border-white/10 font-mono text-gray-300 hidden sm:inline">
+            phase:{String(gameState.phase)} rid:{String(roundId)} me:{String(currentPlayerId)}
+          </span>
         </div>
 
         <div className="flex items-center gap-3 sm:gap-4">
           <div className="px-3 sm:px-4 py-1.5 sm:py-2 bg-[#1DB954]/10 text-[#1DB954] rounded-full text-xs sm:text-sm font-black border border-[#1DB954]/20 flex items-center gap-2">
             <Users size={14} />
-            {gameState.players.length}
+            {(gameState.players as Player[]).length}
           </div>
-          <button onClick={() => setShowSettings(true)} className="p-1.5 text-gray-400 hover:text-white transition-colors">
+          <button
+            onClick={() => setShowSettings(true)}
+            className="p-1.5 text-gray-400 hover:text-white transition-colors"
+          >
             <Settings size={22} />
           </button>
         </div>
@@ -1109,13 +1250,18 @@ export default function App() {
       {showSettings && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl animate-in fade-in">
           <Card className="max-w-2xl w-full relative space-y-6 overflow-hidden border-[#1DB954]/40">
-            <button onClick={() => setShowSettings(false)} className="absolute top-4 right-4 p-2 text-gray-400 hover:text-white transition-colors">
+            <button
+              onClick={() => setShowSettings(false)}
+              className="absolute top-4 right-4 p-2 text-gray-400 hover:text-white transition-colors"
+            >
               <X size={24} />
             </button>
 
             <div className="flex items-center gap-3 text-[#1DB954]">
               <Settings size={28} />
-              <h2 className="text-2xl font-black uppercase tracking-tight italic">Dev Dashboard</h2>
+              <h2 className="text-2xl font-black uppercase tracking-tight italic">
+                Dev Dashboard
+              </h2>
             </div>
 
             <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-2 custom-scrollbar">
@@ -1123,8 +1269,11 @@ export default function App() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-gray-300">
                     <Music size={18} className="text-[#1DB954]" />
-                    <span className="text-sm font-black uppercase tracking-widest">Spotify (PKCE)</span>
+                    <span className="text-sm font-black uppercase tracking-widest">
+                      Spotify (PKCE)
+                    </span>
                   </div>
+
                   <button
                     onClick={() => {
                       setSpotifyToken(null);
@@ -1161,7 +1310,9 @@ export default function App() {
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">Client ID</label>
+                  <label className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
+                    Client ID
+                  </label>
                   <input
                     type="text"
                     value={spotifyClientId}
@@ -1185,11 +1336,13 @@ export default function App() {
                       className="flex-1 bg-[#121212] border border-[#282828] focus:border-[#1DB954] outline-none rounded-xl px-4 py-3 text-sm text-white"
                     >
                       <option value="">Auto</option>
-                      {detectedDevices.filter((d) => !d.is_restricted).map((d) => (
-                        <option key={d.id} value={d.id}>
-                          {d.name} {d.is_active ? "(active)" : ""}
-                        </option>
-                      ))}
+                      {detectedDevices
+                        .filter((d) => !d.is_restricted)
+                        .map((d) => (
+                          <option key={d.id} value={d.id}>
+                            {d.name} {d.is_active ? "(active)" : ""}
+                          </option>
+                        ))}
                     </select>
                     <button
                       onClick={async () => {
@@ -1201,14 +1354,32 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+
+                {isHost && (
+                  <div className="pt-2">
+                    <Button variant="danger" onClick={resetRoomData} className="w-full">
+                      Reset Room Data
+                    </Button>
+                    <p className="text-xs text-gray-500 mt-2">
+                      (For tonight) Resets phase + wipes submissions/guesses if anything gets stuck.
+                    </p>
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-3">
-                <Button onClick={connectSpotify} className="flex-1 py-4 flex items-center justify-center gap-2">
+                <Button
+                  onClick={connectSpotify}
+                  className="flex-1 py-4 flex items-center justify-center gap-2"
+                >
                   <Music size={18} />
                   Sync Spotify
                 </Button>
-                <Button onClick={() => setShowSettings(false)} variant="secondary" className="flex-1">
+                <Button
+                  onClick={() => setShowSettings(false)}
+                  variant="secondary"
+                  className="flex-1"
+                >
                   Close
                 </Button>
               </div>
@@ -1227,7 +1398,7 @@ export default function App() {
                   Round {gameState.currentQuestionIndex + 1}
                 </p>
                 <h2 className="text-4xl sm:text-6xl md:text-8xl font-black leading-tight tracking-tighter italic text-white px-4">
-                  "{gameState.questions[gameState.currentQuestionIndex]}"
+                  "{(gameState.questions || INITIAL_QUESTIONS)[gameState.currentQuestionIndex]}"
                 </h2>
               </div>
 
@@ -1239,7 +1410,9 @@ export default function App() {
                   Open Submissions
                 </Button>
               ) : (
-                <p className="animate-pulse text-gray-500 font-bold uppercase tracking-widest">Waiting for host...</p>
+                <p className="animate-pulse text-gray-500 font-bold uppercase tracking-widest">
+                  Waiting for host to open submissions...
+                </p>
               )}
             </div>
           )}
@@ -1252,7 +1425,7 @@ export default function App() {
                   Current Prompt
                 </p>
                 <h3 className="text-2xl sm:text-4xl md:text-5xl font-black tracking-tighter leading-tight italic px-4">
-                  "{gameState.questions[gameState.currentQuestionIndex]}"
+                  "{(gameState.questions || INITIAL_QUESTIONS)[gameState.currentQuestionIndex]}"
                 </h3>
               </div>
 
@@ -1286,14 +1459,19 @@ export default function App() {
                 <div className="flex flex-col items-center justify-center py-20 space-y-6">
                   <Check size={80} className="text-[#1DB954] mx-auto animate-bounce" />
                   <h2 className="text-3xl font-black italic">TUNE LOCKED</h2>
-                  <p className="text-gray-500 font-bold uppercase tracking-widest">Waiting for other players...</p>
+                  <p className="text-gray-500 font-bold uppercase tracking-widest">
+                    Waiting for other players...
+                  </p>
                 </div>
               ) : (
                 <>
                   <div className="relative group max-w-4xl mx-auto w-full">
                     <div className="flex flex-col sm:flex-row items-center gap-3 sm:gap-0 bg-[#242424] border-2 border-transparent focus-within:border-[#1DB954] rounded-[2rem] sm:rounded-full p-2 transition-all shadow-2xl">
                       <div className="flex items-center flex-1 px-4 sm:px-6 w-full">
-                        <Search className="text-gray-500 group-focus-within:text-[#1DB954] transition-colors shrink-0" size={24} />
+                        <Search
+                          className="text-gray-500 group-focus-within:text-[#1DB954] transition-colors shrink-0"
+                          size={24}
+                        />
                         <input
                           type="text"
                           value={searchQuery}
@@ -1322,7 +1500,9 @@ export default function App() {
                     {isSearching ? (
                       <div className="col-span-full flex flex-col items-center justify-center py-24 gap-6 text-gray-500">
                         <RefreshCw className="animate-spin text-[#1DB954]" size={64} />
-                        <p className="font-black text-xl animate-pulse tracking-widest uppercase italic">Digging Crates...</p>
+                        <p className="font-black text-xl animate-pulse tracking-widest uppercase italic">
+                          Digging Crates...
+                        </p>
                       </div>
                     ) : searchResults.length > 0 ? (
                       searchResults.map((song) => (
@@ -1331,19 +1511,26 @@ export default function App() {
                           onClick={() => submitSong(song)}
                           className="bg-[#181818] p-5 sm:p-6 rounded-[2.5rem] flex items-center gap-6 hover:bg-[#282828] cursor-pointer group transition-all border border-transparent hover:border-[#1DB954]/40"
                         >
-                          <img src={song.albumArt} className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl shadow-2xl group-hover:scale-105 transition-transform" />
+                          <img
+                            src={song.albumArt}
+                            className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl shadow-2xl group-hover:scale-105 transition-transform"
+                          />
                           <div className="flex-1 overflow-hidden">
                             <h4 className="font-black text-xl sm:text-2xl truncate group-hover:text-[#1DB954] transition-colors tracking-tight leading-none mb-1">
                               {song.title}
                             </h4>
-                            <p className="text-sm sm:text-lg text-gray-500 font-bold truncate italic">{song.artist}</p>
+                            <p className="text-sm sm:text-lg text-gray-500 font-bold truncate italic">
+                              {song.artist}
+                            </p>
                           </div>
                         </div>
                       ))
                     ) : (
                       <div className="col-span-full text-center py-24 text-gray-800 bg-[#181818]/30 rounded-[4rem] border-2 border-dashed border-[#282828]">
                         <Music size={100} className="mx-auto mb-8 opacity-5" />
-                        <p className="text-3xl font-black uppercase tracking-tighter opacity-20 italic px-4">Find the perfect sound</p>
+                        <p className="text-3xl font-black uppercase tracking-tighter opacity-20 italic px-4">
+                          Find the perfect sound
+                        </p>
                       </div>
                     )}
                   </div>
@@ -1358,9 +1545,13 @@ export default function App() {
               <div className="text-center space-y-6">
                 <div className="inline-flex items-center gap-4 bg-[#1DB954]/10 px-8 py-3 rounded-full border border-[#1DB954]/20">
                   <Headphones size={20} className="text-[#1DB954]" />
-                  <span className="font-black uppercase tracking-[0.5em] text-xs">The Listening Lounge</span>
+                  <span className="font-black uppercase tracking-[0.5em] text-xs">
+                    The Listening Lounge
+                  </span>
                 </div>
-                <h2 className="text-5xl sm:text-7xl font-black tracking-tighter uppercase italic leading-none">Party Mix</h2>
+                <h2 className="text-5xl sm:text-7xl font-black tracking-tighter uppercase italic leading-none">
+                  Party Mix
+                </h2>
               </div>
 
               <div className="relative max-w-4xl mx-auto">
@@ -1381,7 +1572,7 @@ export default function App() {
                   </div>
 
                   <div className="flex-1 text-center md:text-left space-y-4 relative z-10">
-                    {submissions[listeningIndex] && (
+                    {submissions[listeningIndex] ? (
                       <>
                         <p className="text-[#1DB954] font-black uppercase tracking-[0.4em] text-xs italic">
                           Track {listeningIndex + 1} of {submissions.length}
@@ -1389,7 +1580,9 @@ export default function App() {
                         <h3 className="text-4xl sm:text-6xl font-black tracking-tighter leading-tight italic">
                           {submissions[listeningIndex].song.title}
                         </h3>
-                        <p className="text-2xl sm:text-3xl text-gray-500 font-bold italic">{submissions[listeningIndex].song.artist}</p>
+                        <p className="text-2xl sm:text-3xl text-gray-500 font-bold italic">
+                          {submissions[listeningIndex].song.artist}
+                        </p>
 
                         {isHost && !submissions[listeningIndex].song.id.startsWith("ai-") && (
                           <div className="pt-3 flex gap-3 flex-wrap">
@@ -1399,16 +1592,26 @@ export default function App() {
                             >
                               Play on Spotify
                             </Button>
-                            <Button onClick={pausePlayback} variant="outline" className="px-10 py-4 text-lg uppercase tracking-widest">
+                            <Button
+                              onClick={pausePlayback}
+                              variant="outline"
+                              className="px-10 py-4 text-lg uppercase tracking-widest"
+                            >
                               Pause
                             </Button>
                           </div>
                         )}
 
                         {isAnnouncing && (
-                          <div className="text-xs text-gray-500 font-bold uppercase tracking-widest">Announcing…</div>
+                          <div className="text-xs text-gray-500 font-bold uppercase tracking-widest">
+                            Announcing…
+                          </div>
                         )}
                       </>
+                    ) : (
+                      <div className="text-gray-500 font-bold uppercase tracking-widest">
+                        No submissions found for this round.
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1454,15 +1657,24 @@ export default function App() {
           {gameState.phase === GamePhase.VOTING && (
             <div className="space-y-12 animate-in fade-in duration-500 pb-20">
               <div className="text-center space-y-4">
-                <h2 className="text-4xl sm:text-6xl md:text-8xl font-black tracking-tighter uppercase italic">The Mixup</h2>
-                <p className="text-gray-400 font-medium text-xl sm:text-2xl">Who curated these selections?</p>
+                <h2 className="text-4xl sm:text-6xl md:text-8xl font-black tracking-tighter uppercase italic">
+                  The Mixup
+                </h2>
+                <p className="text-gray-400 font-medium text-xl sm:text-2xl">
+                  Who curated these selections?
+                </p>
               </div>
 
               {isHost ? (
                 <div className="text-center p-8 bg-[#181818] border border-[#282828] rounded-[2.5rem]">
-                  <p className="text-gray-400 font-bold uppercase tracking-widest">Host is running the round (no voting)</p>
+                  <p className="text-gray-400 font-bold uppercase tracking-widest">
+                    Host is running the round (no voting)
+                  </p>
                   <div className="pt-6">
-                    <Button onClick={finalizeGuesses} className="px-16 py-6 text-2xl font-black rounded-full uppercase italic tracking-tighter">
+                    <Button
+                      onClick={finalizeGuesses}
+                      className="px-16 py-6 text-2xl font-black rounded-full uppercase italic tracking-tighter"
+                    >
                       Reveal Results
                     </Button>
                   </div>
@@ -1486,19 +1698,28 @@ export default function App() {
                           }`}
                         >
                           <div className="w-full sm:w-48 h-48 sm:h-auto bg-[#282828] flex-shrink-0 relative overflow-hidden">
-                            <img src={sub.song.albumArt} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-1000" />
+                            <img
+                              src={sub.song.albumArt}
+                              className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-1000"
+                            />
                           </div>
 
                           <div className="flex-1 p-6 sm:p-8 flex flex-col justify-between">
                             <div>
-                              <h4 className="text-2xl sm:text-3xl font-black mb-1 leading-tight tracking-tight">{sub.song.title}</h4>
-                              <p className="text-lg sm:text-xl text-gray-500 font-bold mb-6 italic">{sub.song.artist}</p>
+                              <h4 className="text-2xl sm:text-3xl font-black mb-1 leading-tight tracking-tight">
+                                {sub.song.title}
+                              </h4>
+                              <p className="text-lg sm:text-xl text-gray-500 font-bold mb-6 italic">
+                                {sub.song.artist}
+                              </p>
                             </div>
 
                             <div className="space-y-4">
-                              <p className="text-[10px] font-black uppercase tracking-[0.5em] text-[#1DB954]">Pick a Player</p>
+                              <p className="text-[10px] font-black uppercase tracking-[0.5em] text-[#1DB954]">
+                                Pick a Player
+                              </p>
                               <div className="flex flex-wrap gap-2">
-                                {gameState.players
+                                {(gameState.players as Player[])
                                   .filter((p) => p.id !== currentPlayerId && !p.isHost)
                                   .map((p) => {
                                     const isSelected = currentGuess?.targetPlayerId === p.id;
@@ -1541,7 +1762,7 @@ export default function App() {
               const currentSub = submissions[gameState.currentRevealIndex];
               if (!currentSub) return <div>Loading reveal...</div>;
 
-              const owner = gameState.players.find((p) => p.id === currentSub.playerId);
+              const owner = (gameState.players as Player[]).find((p) => p.id === currentSub.playerId);
               const key = submissionKey(currentSub.song.id, roundId);
 
               const guessesForSub = guesses.filter((g) => g.submissionId === key);
@@ -1552,29 +1773,49 @@ export default function App() {
                 <div className="space-y-16 py-10 animate-in fade-in duration-1000">
                   <div className="text-center space-y-10 px-4">
                     <div className="inline-flex items-center gap-4 bg-[#1DB954]/10 px-8 py-3 rounded-full border border-[#1DB954]/20">
-                      <span className="font-black uppercase tracking-[0.5em] text-xs">Reveal #{gameState.currentRevealIndex + 1}</span>
+                      <span className="font-black uppercase tracking-[0.5em] text-xs">
+                        Reveal #{gameState.currentRevealIndex + 1}
+                      </span>
                     </div>
 
                     <div className="flex flex-col items-center">
                       <div className="relative group mb-10">
                         <div className="absolute inset-0 bg-[#1DB954] blur-[80px] opacity-20 rounded-full animate-pulse"></div>
-                        <img src={currentSub.song.albumArt} className="w-48 h-48 sm:w-64 sm:h-64 rounded-[2.5rem] shadow-2xl border-[10px] border-[#181818] relative z-10" />
+                        <img
+                          src={currentSub.song.albumArt}
+                          className="w-48 h-48 sm:w-64 sm:h-64 rounded-[2.5rem] shadow-2xl border-[10px] border-[#181818] relative z-10"
+                        />
                       </div>
-                      <h2 className="text-4xl sm:text-7xl font-black leading-tight tracking-tighter text-white italic drop-shadow-2xl">"{currentSub.song.title}"</h2>
-                      <p className="text-2xl sm:text-4xl text-gray-500 font-black italic tracking-tighter">— {currentSub.song.artist}</p>
+                      <h2 className="text-4xl sm:text-7xl font-black leading-tight tracking-tighter text-white italic drop-shadow-2xl">
+                        "{currentSub.song.title}"
+                      </h2>
+                      <p className="text-2xl sm:text-4xl text-gray-500 font-black italic tracking-tighter">
+                        — {currentSub.song.artist}
+                      </p>
                     </div>
                   </div>
 
                   <div className="grid lg:grid-cols-3 gap-8 items-start">
                     <div className="space-y-6 animate-in slide-in-from-left delay-300 duration-700">
-                      <div className="flex items-center gap-3 px-6 text-[#1DB954]"><Eye size={22} /><h4 className="font-black uppercase tracking-widest text-sm">Correct Detectives (+10 pts)</h4></div>
+                      <div className="flex items-center gap-3 px-6 text-[#1DB954]">
+                        <Eye size={22} />
+                        <h4 className="font-black uppercase tracking-widest text-sm">
+                          Correct Detectives (+10 pts)
+                        </h4>
+                      </div>
                       <div className="grid gap-3">
                         {correctDetectives.length > 0 ? (
                           correctDetectives.map((g) => {
-                            const player = gameState.players.find((p) => p.id === g.voterId);
+                            const player = (gameState.players as Player[]).find((p) => p.id === g.voterId);
                             return (
-                              <div key={g.voterId} className="bg-[#1DB954]/10 border border-[#1DB954]/30 p-4 rounded-2xl flex items-center gap-4 animate-in zoom-in">
-                                <img src={player?.avatar} className="w-10 h-10 rounded-full border-2 border-[#1DB954]" />
+                              <div
+                                key={g.voterId}
+                                className="bg-[#1DB954]/10 border border-[#1DB954]/30 p-4 rounded-2xl flex items-center gap-4 animate-in zoom-in"
+                              >
+                                <img
+                                  src={player?.avatar}
+                                  className="w-10 h-10 rounded-full border-2 border-[#1DB954]"
+                                />
                                 <span className="font-bold text-lg">{player?.name}</span>
                                 <Check className="ml-auto text-[#1DB954]" size={20} />
                               </div>
@@ -1591,25 +1832,45 @@ export default function App() {
                     <div className="bg-[#1DB954] text-black p-10 rounded-[3rem] shadow-[0_0_100px_rgba(29,185,84,0.3)] text-center space-y-6 order-first lg:order-none animate-in zoom-in duration-500">
                       <p className="font-black uppercase tracking-[0.3em] text-xs">The Choice Of</p>
                       <div className="relative inline-block">
-                        <img src={owner?.avatar} className="w-40 h-40 rounded-full border-[12px] border-black/10 shadow-xl mx-auto" />
-                        <div className="absolute -bottom-4 -right-4 bg-black text-white p-4 rounded-full shadow-2xl scale-125"><Disc className="animate-spin" size={24} /></div>
+                        <img
+                          src={owner?.avatar}
+                          className="w-40 h-40 rounded-full border-[12px] border-black/10 shadow-xl mx-auto"
+                        />
+                        <div className="absolute -bottom-4 -right-4 bg-black text-white p-4 rounded-full shadow-2xl scale-125">
+                          <Disc className="animate-spin" size={24} />
+                        </div>
                       </div>
-                      <h3 className="text-4xl sm:text-6xl font-black tracking-tighter uppercase italic">{owner?.name}</h3>
+                      <h3 className="text-4xl sm:text-6xl font-black tracking-tighter uppercase italic">
+                        {owner?.name}
+                      </h3>
                     </div>
 
                     <div className="space-y-6 animate-in slide-in-from-right delay-300 duration-700">
-                      <div className="flex items-center gap-3 px-6 text-red-500"><XCircle size={22} /><h4 className="font-black uppercase tracking-widest text-sm">Bamboozled Players</h4></div>
+                      <div className="flex items-center gap-3 px-6 text-red-500">
+                        <XCircle size={22} />
+                        <h4 className="font-black uppercase tracking-widest text-sm">
+                          Bamboozled Players
+                        </h4>
+                      </div>
                       <div className="grid gap-3">
                         {bamboozled.length > 0 ? (
                           bamboozled.map((g) => {
-                            const player = gameState.players.find((p) => p.id === g.voterId);
-                            const mistakenIdentity = gameState.players.find((p) => p.id === g.targetPlayerId);
+                            const player = (gameState.players as Player[]).find((p) => p.id === g.voterId);
+                            const mistaken = (gameState.players as Player[]).find((p) => p.id === g.targetPlayerId);
                             return (
-                              <div key={g.voterId} className="bg-red-500/5 border border-red-500/20 p-4 rounded-2xl flex items-center gap-4 animate-in zoom-in">
-                                <img src={player?.avatar} className="w-10 h-10 rounded-full border-2 border-red-500/30 opacity-50" />
+                              <div
+                                key={g.voterId}
+                                className="bg-red-500/5 border border-red-500/20 p-4 rounded-2xl flex items-center gap-4 animate-in zoom-in"
+                              >
+                                <img
+                                  src={player?.avatar}
+                                  className="w-10 h-10 rounded-full border-2 border-red-500/30 opacity-50"
+                                />
                                 <div className="flex flex-col">
                                   <span className="font-bold">{player?.name}</span>
-                                  <span className="text-[10px] uppercase font-black text-gray-500">Guessed {mistakenIdentity?.name}</span>
+                                  <span className="text-[10px] uppercase font-black text-gray-500">
+                                    Guessed {mistaken?.name}
+                                  </span>
                                 </div>
                               </div>
                             );
@@ -1645,12 +1906,14 @@ export default function App() {
                 <h2 className="text-6xl sm:text-8xl md:text-[9rem] font-black tracking-tighter uppercase italic drop-shadow-lg leading-none">
                   The Ranks
                 </h2>
-                <p className="text-gray-500 text-xl sm:text-3xl font-black uppercase tracking-[0.4em]">Who has the vision?</p>
+                <p className="text-gray-500 text-xl sm:text-3xl font-black uppercase tracking-[0.4em]">
+                  Who has the vision?
+                </p>
               </div>
 
               <Card className="max-w-4xl mx-auto p-0 overflow-hidden rounded-[3rem] sm:rounded-[5rem] border-[#282828] bg-black/70 backdrop-blur-3xl shadow-2xl">
                 <div className="divide-y divide-white/5">
-                  {[...gameState.players]
+                  {[...(gameState.players as Player[])]
                     .filter((p) => !p.isHost)
                     .sort((a, b) => b.score - a.score)
                     .map((player, idx) => (
@@ -1661,11 +1924,24 @@ export default function App() {
                         }`}
                       >
                         <div className="flex items-center gap-6 sm:gap-12">
-                          <div className={`w-12 h-12 sm:w-20 sm:h-20 rounded-full flex items-center justify-center font-black text-xl sm:text-4xl ${idx === 0 ? "bg-[#1DB954] text-black shadow-xl" : "bg-[#282828] text-gray-500"}`}>{idx + 1}</div>
-                          <img src={player.avatar} className="w-12 h-12 sm:w-24 sm:h-24 rounded-full border-4 sm:border-[8px] border-transparent" />
-                          <span className="font-black text-2xl sm:text-5xl tracking-tighter uppercase italic">{player.name}</span>
+                          <div
+                            className={`w-12 h-12 sm:w-20 sm:h-20 rounded-full flex items-center justify-center font-black text-xl sm:text-4xl ${
+                              idx === 0 ? "bg-[#1DB954] text-black shadow-xl" : "bg-[#282828] text-gray-500"
+                            }`}
+                          >
+                            {idx + 1}
+                          </div>
+                          <img
+                            src={player.avatar}
+                            className="w-12 h-12 sm:w-24 sm:h-24 rounded-full border-4 sm:border-[8px] border-transparent"
+                          />
+                          <span className="font-black text-2xl sm:text-5xl tracking-tighter uppercase italic">
+                            {player.name}
+                          </span>
                         </div>
-                        <div className="text-4xl sm:text-7xl md:text-[8rem] font-black text-[#1DB954] tracking-tighter drop-shadow-lg">{player.score}</div>
+                        <div className="text-4xl sm:text-7xl md:text-[8rem] font-black text-[#1DB954] tracking-tighter drop-shadow-lg">
+                          {player.score}
+                        </div>
                       </div>
                     ))}
                 </div>
@@ -1673,7 +1949,10 @@ export default function App() {
 
               {isHost && (
                 <div className="flex justify-center pt-8 sm:pt-16">
-                  <Button onClick={nextQuestion} className="w-full md:w-[40rem] py-6 sm:py-8 text-2xl sm:text-4xl font-black rounded-full bg-white text-black shadow-2xl uppercase italic tracking-tighter">
+                  <Button
+                    onClick={nextQuestion}
+                    className="w-full md:w-[40rem] py-6 sm:py-8 text-2xl sm:text-4xl font-black rounded-full bg-white text-black shadow-2xl uppercase italic tracking-tighter"
+                  >
                     {gameState.currentQuestionIndex < 9 ? "Next Round" : "Finale"}
                   </Button>
                 </div>
@@ -1685,16 +1964,30 @@ export default function App() {
           {gameState.phase === GamePhase.FINAL && (
             <div className="text-center space-y-16 sm:space-y-24 py-16 sm:py-24 animate-in fade-in zoom-in duration-1000">
               <div className="space-y-8">
-                <div className="flex justify-center mb-10 sm:mb-16"><Trophy size={180} className="text-[#1DB954] animate-bounce sm:size-[240px]" /></div>
-                <h2 className="text-8xl sm:text-[12rem] md:text-[18rem] font-black tracking-tighter leading-none uppercase italic text-[#1DB954] drop-shadow-2xl">KING</h2>
-                <p className="text-2xl sm:text-5xl text-gray-600 font-black uppercase tracking-[0.5em] italic px-4">Master Curator</p>
+                <div className="flex justify-center mb-10 sm:mb-16">
+                  <Trophy size={180} className="text-[#1DB954] animate-bounce sm:size-[240px]" />
+                </div>
+                <h2 className="text-8xl sm:text-[12rem] md:text-[18rem] font-black tracking-tighter leading-none uppercase italic text-[#1DB954] drop-shadow-2xl">
+                  KING
+                </h2>
+                <p className="text-2xl sm:text-5xl text-gray-600 font-black uppercase tracking-[0.5em] italic px-4">
+                  Master Curator
+                </p>
               </div>
 
               <div className="flex flex-col sm:flex-row gap-8 sm:gap-12 justify-center pt-12 sm:pt-24 px-4">
-                <Button onClick={() => window.location.reload()} variant="primary" className="px-16 sm:px-32 py-8 text-3xl sm:text-5xl font-black uppercase italic">
+                <Button
+                  onClick={() => window.location.reload()}
+                  variant="primary"
+                  className="px-16 sm:px-32 py-8 text-3xl sm:text-5xl font-black uppercase italic"
+                >
                   New Session
                 </Button>
-                <Button variant="outline" onClick={() => window.location.reload()} className="px-12 text-2xl uppercase tracking-widest font-black">
+                <Button
+                  variant="outline"
+                  onClick={() => window.location.reload()}
+                  className="px-12 text-2xl uppercase tracking-widest font-black"
+                >
                   Quit Game
                 </Button>
               </div>
@@ -1703,5 +1996,13 @@ export default function App() {
         </div>
       </main>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
   );
 }
