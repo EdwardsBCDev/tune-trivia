@@ -133,6 +133,9 @@ type SpotifyDevice = {
   type: string;
 };
 
+type Submission = { playerId: string; song: Song; roundId: number };
+type Guess = { voterId: string; submissionId: string; targetPlayerId: string; roundId: number };
+
 export default function App() {
   // --- Local UI State ---
   const [roomCodeInput, setRoomCodeInput] = useState("");
@@ -144,7 +147,7 @@ export default function App() {
   );
 
   // --- Game State ---
-  const [gameState, setGameState] = useState<GameState>({
+  const [gameState, setGameState] = useState<GameState & { roundId?: number }>({
     roomId: "",
     phase: GamePhase.LOBBY,
     currentQuestionIndex: 0,
@@ -153,7 +156,10 @@ export default function App() {
     submissions: [],
     guesses: [],
     currentRevealIndex: 0,
+    roundId: 0,
   });
+
+  const roundId = gameState.roundId ?? 0;
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Song[]>([]);
@@ -221,7 +227,7 @@ export default function App() {
       : `${currentOrigin}/`;
   }, [manualRedirectUri]);
 
-  // --- Utility helpers ---
+  // --- Helpers ---
   const shuffle = <T,>(arr: T[]) => {
     const a = [...arr];
     for (let i = a.length - 1; i > 0; i--) {
@@ -231,44 +237,50 @@ export default function App() {
     return a;
   };
 
-  // ✅ Round-scoped guess keys (prevents round 2 auto-selected look)
-  const submissionKey = (songId: string) =>
-    `${gameState.currentQuestionIndex}:${songId}`;
+  // ✅ round-scoped submission key
+  const submissionKey = (songId: string, rid = roundId) => `${rid}:${songId}`;
 
   // --- Firebase sync ---
   useEffect(() => {
     if (!gameState.roomId || !db) return;
 
     const roomRef = ref(db, `rooms/${gameState.roomId}`);
-    const unsubscribe = onValue(roomRef, (snapshot) => {
+    const unsub = onValue(roomRef, (snapshot) => {
       const data = snapshot.val();
-      if (data) {
-        // Important: rely on DB to provide arrays; we always write [] on transitions
-        setGameState((prev) => ({ ...prev, ...data }));
-        if (data.hostToken) setHostToken(data.hostToken);
-      }
+      if (!data) return;
+
+      // ✅ IMPORTANT: replace, don’t “merge arrays and keep stale ones”
+      setGameState((prev) => ({
+        ...prev,
+        ...data,
+        submissions: Array.isArray(data.submissions) ? data.submissions : [],
+        guesses: Array.isArray(data.guesses) ? data.guesses : [],
+        players: Array.isArray(data.players) ? data.players : [],
+        questions: Array.isArray(data.questions) ? data.questions : INITIAL_QUESTIONS,
+        roundId: typeof data.roundId === "number" ? data.roundId : (prev.roundId ?? 0),
+      }));
+
+      if (data.hostToken) setHostToken(data.hostToken);
     });
 
-    return () => unsubscribe();
+    return () => unsub();
   }, [gameState.roomId]);
 
   const myPlayer = gameState.players.find((p) => p.id === currentPlayerId);
   const isHost = myPlayer?.isHost;
 
-  // When round changes, reset local-only UI so it never “sticks”
   useEffect(() => {
+    // local UI reset when round changes
     setSearchQuery("");
     setSearchResults([]);
     setSearchError(null);
     setListeningIndex(0);
-  }, [gameState.currentQuestionIndex]);
+  }, [roundId]);
 
   // Share host token to guests
   useEffect(() => {
     if (isHost && spotifyToken && gameState.roomId && db) {
-      update(ref(db, `rooms/${gameState.roomId}`), { hostToken: spotifyToken }).catch(
-        () => {}
-      );
+      update(ref(db, `rooms/${gameState.roomId}`), { hostToken: spotifyToken }).catch(() => {});
     }
   }, [isHost, spotifyToken, gameState.roomId]);
 
@@ -309,8 +321,9 @@ export default function App() {
 
   useEffect(() => {
     if (gameState.phase === GamePhase.REVEAL) {
-      const currentSub = gameState.submissions[gameState.currentRevealIndex];
+      const currentSub = (gameState.submissions as any[])[gameState.currentRevealIndex] as Submission | undefined;
       if (!currentSub) return;
+
       const player = gameState.players.find((p) => p.id === currentSub.playerId);
       if (player) playAnnouncement(currentSub.song, player.name);
     }
@@ -400,9 +413,7 @@ export default function App() {
     const token = spotifyTokenRef.current || hostToken;
     if (!token) return null;
 
-    // Only refresh if it's OUR token (guests using hostToken cannot refresh)
     const isOurToken = !!spotifyTokenRef.current;
-
     const expiryStr = localStorage.getItem("spotify_token_expiry");
     const expiry = expiryStr ? Number(expiryStr) : 0;
 
@@ -410,7 +421,6 @@ export default function App() {
       const refreshed = await refreshSpotifyToken();
       return refreshed || spotifyTokenRef.current;
     }
-
     return token;
   };
 
@@ -420,77 +430,64 @@ export default function App() {
     const error = params.get("error");
 
     if (error) {
-      console.error("Spotify auth error:", error);
       alert(`Spotify auth error: ${error}`);
       return;
     }
     if (!code) return;
 
     const exchange = async () => {
-      try {
-        const verifier = localStorage.getItem("spotify_pkce_verifier");
-        const redirectUriUsed = localStorage.getItem("spotify_redirect_uri_used");
-        const clientIdToUse =
-          spotifyClientIdRef.current || localStorage.getItem("spotify_client_id") || "";
+      const verifier = localStorage.getItem("spotify_pkce_verifier");
+      const redirectUriUsed = localStorage.getItem("spotify_redirect_uri_used");
+      const clientIdToUse =
+        spotifyClientIdRef.current || localStorage.getItem("spotify_client_id") || "";
 
-        if (!clientIdToUse) {
-          alert("Missing Spotify Client ID. Add it in settings, then Sync again.");
-          return;
-        }
-        if (!verifier || !redirectUriUsed) {
-          alert("Missing PKCE verifier. Click Sync Spotify again.");
-          return;
-        }
-
-        const body = new URLSearchParams();
-        body.set("client_id", clientIdToUse);
-        body.set("grant_type", "authorization_code");
-        body.set("code", code);
-        body.set("redirect_uri", redirectUriUsed);
-        body.set("code_verifier", verifier);
-
-        const res = await fetch(SPOTIFY_TOKEN_ENDPOINT, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body,
-        });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-          console.error("Spotify token exchange failed:", data);
-          alert("Spotify token exchange failed. Check Redirect URI matches EXACTLY.");
-          return;
-        }
-
-        const accessToken = data.access_token as string;
-        const refreshToken = data.refresh_token as string | undefined;
-        const expiresIn = data.expires_in as number;
-
-        localStorage.setItem("spotify_access_token", accessToken);
-        if (refreshToken) localStorage.setItem("spotify_refresh_token", refreshToken);
-        localStorage.setItem("spotify_token_expiry", String(Date.now() + expiresIn * 1000));
-
-        setSpotifyToken(accessToken);
-
-        const postAuthPath = localStorage.getItem("spotify_post_auth_path") || "/";
-        window.history.replaceState(null, "", postAuthPath);
-      } catch (e) {
-        console.error(e);
-        alert("Spotify auth failed unexpectedly. Check console logs.");
+      if (!clientIdToUse || !verifier || !redirectUriUsed) {
+        alert("Spotify auth missing verifier/client id. Click Sync again.");
+        return;
       }
+
+      const body = new URLSearchParams();
+      body.set("client_id", clientIdToUse);
+      body.set("grant_type", "authorization_code");
+      body.set("code", code);
+      body.set("redirect_uri", redirectUriUsed);
+      body.set("code_verifier", verifier);
+
+      const res = await fetch(SPOTIFY_TOKEN_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        console.error("Spotify token exchange failed:", data);
+        alert("Spotify token exchange failed. Redirect URI must match EXACTLY.");
+        return;
+      }
+
+      const accessToken = data.access_token as string;
+      const refreshToken = data.refresh_token as string | undefined;
+      const expiresIn = data.expires_in as number;
+
+      localStorage.setItem("spotify_access_token", accessToken);
+      if (refreshToken) localStorage.setItem("spotify_refresh_token", refreshToken);
+      localStorage.setItem("spotify_token_expiry", String(Date.now() + expiresIn * 1000));
+      setSpotifyToken(accessToken);
+
+      const postAuthPath = localStorage.getItem("spotify_post_auth_path") || "/";
+      window.history.replaceState(null, "", postAuthPath);
     };
 
     exchange();
   }, []);
 
   // ---------------------------
-  // ✅ SPOTIFY WEB API helpers
+  // ✅ Spotify Web API helpers
   // ---------------------------
   const spotifyFetch = async (url: string, init?: RequestInit) => {
     const token = await ensureValidSpotifyToken();
     if (!token) throw new Error("NoSpotifyToken");
-
     return fetch(url, {
       ...init,
       headers: {
@@ -549,15 +546,11 @@ export default function App() {
       alert("No Spotify device found. Open Spotify and play any song once, then try again.");
       return;
     }
-
     if (/tune trivia/i.test(device.name)) {
       alert("Spotify is connected to Tune Trivia. In Spotify → Devices, select your iPad/laptop device, then try again.");
       return;
     }
-
-    if (!device.is_active) {
-      await transferPlayback(device.id, false);
-    }
+    if (!device.is_active) await transferPlayback(device.id, false);
 
     lastUsedDeviceIdRef.current = device.id;
 
@@ -573,13 +566,8 @@ export default function App() {
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
       console.warn("play failed:", res.status, txt);
-
-      if (res.status === 404) {
-        alert("Spotify can’t find an active device. Start any song in Spotify once, then retry.");
-      }
-      if (res.status === 401) {
-        alert("Spotify expired. Open settings and Sync Spotify again.");
-      }
+      if (res.status === 401) alert("Spotify expired. Re-sync in settings.");
+      if (res.status === 404) alert("No active device. Start a song in Spotify once, then retry.");
     }
   };
 
@@ -600,33 +588,43 @@ export default function App() {
     }
   };
 
-  // Auto-play when host is in LISTENING and index changes
+  // auto play in listening (host only)
   useEffect(() => {
     if (!isHost) return;
     if (gameState.phase !== GamePhase.LISTENING) return;
 
-    const sub = gameState.submissions[listeningIndex];
+    const subs = (gameState.submissions as any[]).filter((s: any) => (s.roundId ?? 0) === roundId) as Submission[];
+    const sub = subs[listeningIndex];
     if (!sub) return;
     if (sub.song.id.startsWith("ai-")) return;
 
     playOnDevice(sub.song.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isHost, gameState.phase, listeningIndex]);
+  }, [isHost, gameState.phase, listeningIndex, roundId]);
 
   // ---------------------------
-  // ✅ Game actions (Firebase)
+  // ✅ GAME ACTIONS (transaction-safe)
   // ---------------------------
-  const syncUpdate = (updates: Partial<GameState>) => {
-    if (!db || !gameState.roomId) return;
-    return update(ref(db, `rooms/${gameState.roomId}`), updates).catch((e) => {
-      console.error("Firebase update failed:", e);
-      alert(`Firebase error: ${e?.message || e}`);
+  const roomRef = useMemo(() => {
+    if (!db || !gameState.roomId) return null;
+    return ref(db, `rooms/${gameState.roomId}`);
+  }, [db, gameState.roomId]);
+
+  const hardResetRoundState = async (targetPhase: GamePhase, rid: number) => {
+    if (!roomRef) return;
+    // ✅ Always write arrays explicitly
+    await update(roomRef, {
+      phase: targetPhase,
+      submissions: [],
+      guesses: [],
+      currentRevealIndex: 0,
+      roundId: rid,
     });
   };
 
   const createRoom = async () => {
     if (!db) {
-      alert("Firebase not connected! Please check your Coolify Environment Variables.");
+      alert("Firebase not connected! Please check your environment variables.");
       return;
     }
     initAudio();
@@ -642,7 +640,7 @@ export default function App() {
       avatar: "https://picsum.photos/seed/host/100/100",
     };
 
-    const initialGame: GameState = {
+    const initialGame: GameState & { roundId: number; hostToken?: string } = {
       roomId: newRoomId,
       phase: GamePhase.LOBBY,
       currentQuestionIndex: 0,
@@ -651,13 +649,11 @@ export default function App() {
       submissions: [],
       guesses: [],
       currentRevealIndex: 0,
+      roundId: 0,
+      hostToken: spotifyToken || "",
     };
 
-    await set(ref(db, `rooms/${newRoomId}`), {
-      ...initialGame,
-      hostToken: spotifyToken || "",
-    });
-
+    await set(ref(db, `rooms/${newRoomId}`), initialGame);
     setCurrentPlayerId(hostId);
     sessionStorage.setItem("tune_player_id", hostId);
     setGameState(initialGame);
@@ -669,10 +665,10 @@ export default function App() {
     if (!playerName) return alert("Please enter your name");
 
     const code = roomCodeInput.toUpperCase().trim();
-    const roomRef = ref(db, `rooms/${code}`);
-    const snapshot = await get(roomRef);
+    const rRef = ref(db, `rooms/${code}`);
+    const snapshot = await get(rRef);
 
-    if (!snapshot.exists()) return alert("Room not found! Check the code.");
+    if (!snapshot.exists()) return alert("Room not found!");
 
     const game = snapshot.val();
     const newPlayerId = currentPlayerId || `p_${Date.now()}`;
@@ -685,7 +681,7 @@ export default function App() {
       avatar: `https://picsum.photos/seed/${newPlayerId}/100/100`,
     };
 
-    await runTransaction(roomRef, (room: any) => {
+    await runTransaction(rRef, (room: any) => {
       if (!room) return room;
       room.players = room.players || [];
       if (!room.players.some((p: any) => p.id === newPlayerId)) room.players.push(newPlayer);
@@ -699,22 +695,20 @@ export default function App() {
   };
 
   const startGame = async () => {
-    if (!isHost) return;
-    if (gameState.players.filter((p) => !p.isHost).length < 2) {
+    if (!isHost || !roomRef) return;
+
+    const nonHostCount = gameState.players.filter((p) => !p.isHost).length;
+    if (nonHostCount < 2) {
       alert("Need at least 2 players (excluding host) to start!");
       return;
     }
 
     let questions = INITIAL_QUESTIONS;
-
     try {
       const generated = await generateTriviaQuestions(10);
       if (generated.length > 0) questions = generated;
-    } catch {
-      console.log("AI Generation failed, using defaults");
-    }
+    } catch {}
 
-    // ✅ randomise and ensure first question changes vs last run
     let shuffled = shuffle(questions);
     const lastFirst = localStorage.getItem("last_first_question") || "";
     if (shuffled.length > 1 && shuffled[0] === lastFirst) {
@@ -722,64 +716,52 @@ export default function App() {
     }
     localStorage.setItem("last_first_question", shuffled[0] || "");
 
-    // ✅ Hard reset round state
-    await syncUpdate({
-      phase: GamePhase.PROMPT,
+    // ✅ atomic: set questions + reset round state
+    await update(roomRef, {
       questions: shuffled,
       currentQuestionIndex: 0,
-      submissions: [],
-      guesses: [],
-      currentRevealIndex: 0,
+      roundId: 0,
     });
-
+    await hardResetRoundState(GamePhase.PROMPT, 0);
     setListeningIndex(0);
   };
 
-  const handleNextPrompt = async () => {
+  const openSubmissions = async () => {
     if (!isHost) return;
-
     setSearchQuery("");
     setSearchResults([]);
     setSearchError(null);
     setListeningIndex(0);
-
-    // ✅ Hard reset for new submission window
-    await syncUpdate({
-      phase: GamePhase.SUBMITTING,
-      submissions: [],
-      guesses: [],
-      currentRevealIndex: 0,
-    });
+    await hardResetRoundState(GamePhase.SUBMITTING, roundId);
   };
 
-  // ✅ Host cannot submit a song (ever)
+  // ✅ submitSong transaction-safe and round-safe (host cannot submit)
   const submitSong = async (song: Song) => {
-    if (!currentPlayerId || !db || !gameState.roomId) return;
+    if (!roomRef || !currentPlayerId) return;
     if (isHost) return;
 
     setSearchQuery("");
     setSearchResults([]);
     setSearchError(null);
 
-    const roomRef = ref(db, `rooms/${gameState.roomId}`);
-
     await runTransaction(roomRef, (room: any) => {
       if (!room) return room;
 
-      room.submissions = room.submissions || [];
-      room.players = room.players || [];
+      const rid = typeof room.roundId === "number" ? room.roundId : 0;
+      room.submissions = Array.isArray(room.submissions) ? room.submissions : [];
+      room.players = Array.isArray(room.players) ? room.players : [];
 
-      // player already submitted this round (since submissions reset per round, this is safe)
-      if (room.submissions.find((s: any) => s.playerId === currentPlayerId)) return room;
+      // only submissions for this round count
+      const subsThisRound = room.submissions.filter((s: any) => (s.roundId ?? 0) === rid);
 
-      const updatedSubs = [...room.submissions, { playerId: currentPlayerId, song }];
+      // prevent double-submit
+      if (subsThisRound.some((s: any) => s.playerId === currentPlayerId)) return room;
+
+      const newSub = { playerId: currentPlayerId, song, roundId: rid };
+      room.submissions = [...subsThisRound, newSub];
 
       const playingPlayers = room.players.filter((p: any) => !p.isHost);
-      const hasEveryoneSubmitted = updatedSubs.length >= playingPlayers.length;
-
-      room.submissions = updatedSubs;
-
-      if (hasEveryoneSubmitted) {
+      if (room.submissions.length >= playingPlayers.length) {
         room.phase = GamePhase.LISTENING;
         room.currentRevealIndex = 0;
       }
@@ -847,58 +829,80 @@ export default function App() {
   const startVoting = async () => {
     if (!isHost) return;
     await pausePlayback();
-    await syncUpdate({ phase: GamePhase.VOTING });
+    if (!roomRef) return;
+    await update(roomRef, { phase: GamePhase.VOTING });
   };
 
-  const submitGuess = (songId: string, targetPlayerId: string) => {
-    if (!currentPlayerId) return;
-    if (isHost) return; // ✅ host does not guess either
+  // ✅ guess transaction-safe (prevents overwriting someone else's guess)
+  const submitGuess = async (songId: string, targetPlayerId: string) => {
+    if (!roomRef || !currentPlayerId) return;
+    if (isHost) return;
 
-    const key = submissionKey(songId);
-    const otherGuesses = gameState.guesses
-      ? gameState.guesses.filter((g) => !(g.voterId === currentPlayerId && g.submissionId === key))
-      : [];
+    const key = submissionKey(songId, roundId);
 
-    const newGuesses = [...otherGuesses, { voterId: currentPlayerId, submissionId: key, targetPlayerId }];
-    syncUpdate({ guesses: newGuesses });
+    await runTransaction(roomRef, (room: any) => {
+      if (!room) return room;
+
+      const rid = typeof room.roundId === "number" ? room.roundId : 0;
+      room.guesses = Array.isArray(room.guesses) ? room.guesses : [];
+      const guessesThisRound = room.guesses.filter((g: any) => (g.roundId ?? 0) === rid);
+
+      // upsert per voter + submissionId
+      const filtered = guessesThisRound.filter(
+        (g: any) => !(g.voterId === currentPlayerId && g.submissionId === key)
+      );
+
+      const newGuess = { voterId: currentPlayerId, submissionId: key, targetPlayerId, roundId: rid };
+      room.guesses = [...filtered, newGuess];
+      return room;
+    });
   };
 
   const finalizeGuesses = async () => {
-    if (!isHost) return;
+    if (!isHost || !roomRef) return;
     await pausePlayback();
-    syncUpdate({ phase: GamePhase.REVEAL, currentRevealIndex: 0 });
+    await update(roomRef, { phase: GamePhase.REVEAL, currentRevealIndex: 0 });
   };
 
-  const nextReveal = () => {
-    if (!isHost) return;
+  // ✅ scoring uses round-scoped keys and reads from round-scoped submissions
+  const nextReveal = async () => {
+    if (!isHost || !roomRef) return;
 
-    const isLast =
-      gameState.currentRevealIndex >= (gameState.submissions?.length || 0) - 1;
+    const subsAll = (gameState.submissions as any[]) as Submission[];
+    const subs = subsAll.filter((s) => (s.roundId ?? 0) === roundId);
 
-    if (isLast) {
-      const updatedPlayers = gameState.players.map((p) => {
-        if (p.isHost) return p; // host doesn't score
+    const isLast = gameState.currentRevealIndex >= subs.length - 1;
 
-        const correctGuessesCount = gameState.guesses
-          ? gameState.guesses.filter(
-              (g) =>
-                g.voterId === p.id &&
-                gameState.submissions.find((s) => submissionKey(s.song.id) === g.submissionId)?.playerId ===
-                  g.targetPlayerId
-            ).length
-          : 0;
-
-        return { ...p, score: p.score + correctGuessesCount * 10 };
-      });
-
-      syncUpdate({ players: updatedPlayers, phase: GamePhase.SCOREBOARD });
-    } else {
-      syncUpdate({ currentRevealIndex: gameState.currentRevealIndex + 1 });
+    if (!isLast) {
+      await update(roomRef, { currentRevealIndex: gameState.currentRevealIndex + 1 });
+      return;
     }
+
+    // End of reveal: calculate scores
+    const guessesAll = (gameState.guesses as any[]) as Guess[];
+    const guesses = guessesAll.filter((g) => (g.roundId ?? 0) === roundId);
+
+    const ownerByKey = new Map<string, string>();
+    subs.forEach((s) => ownerByKey.set(submissionKey(s.song.id, roundId), s.playerId));
+
+    const updatedPlayers = gameState.players.map((p) => {
+      if (p.isHost) return p;
+
+      const myGuesses = guesses.filter((g) => g.voterId === p.id);
+      let correct = 0;
+      for (const g of myGuesses) {
+        const actualOwner = ownerByKey.get(g.submissionId);
+        if (actualOwner && actualOwner === g.targetPlayerId) correct += 1;
+      }
+
+      return { ...p, score: p.score + correct * 10 };
+    });
+
+    await update(roomRef, { players: updatedPlayers, phase: GamePhase.SCOREBOARD });
   };
 
   const nextQuestion = async () => {
-    if (!isHost) return;
+    if (!isHost || !roomRef) return;
 
     setSearchQuery("");
     setSearchResults([]);
@@ -907,24 +911,24 @@ export default function App() {
 
     const isGameEnd = gameState.currentQuestionIndex >= 9;
     if (isGameEnd) {
-      syncUpdate({ phase: GamePhase.FINAL });
+      await update(roomRef, { phase: GamePhase.FINAL });
       return;
     }
 
-    // ✅ HARD reset for next round so nobody stays "Tune locked"
-    syncUpdate({
+    const newRoundId = roundId + 1;
+
+    await update(roomRef, {
       currentQuestionIndex: gameState.currentQuestionIndex + 1,
-      phase: GamePhase.PROMPT,
-      submissions: [],
-      guesses: [],
-      currentRevealIndex: 0,
+      roundId: newRoundId,
     });
+
+    // ✅ this is the key: hard reset arrays for the new round
+    await hardResetRoundState(GamePhase.PROMPT, newRoundId);
   };
 
   const forceStartListening = async () => {
-    if (!isHost) return;
-    // Useful if someone refreshed and the round got stuck
-    await syncUpdate({ phase: GamePhase.LISTENING, currentRevealIndex: 0 });
+    if (!isHost || !roomRef) return;
+    await update(roomRef, { phase: GamePhase.LISTENING, currentRevealIndex: 0 });
     setListeningIndex(0);
   };
 
@@ -934,7 +938,30 @@ export default function App() {
   };
 
   // ---------------------------
-  // RENDER: Start / Join screen
+  // Derived round-scoped views
+  // ---------------------------
+  const submissionsAll = (gameState.submissions as any[]) as Submission[];
+  const submissions = submissionsAll.filter((s) => (s.roundId ?? 0) === roundId);
+
+  const guessesAll = (gameState.guesses as any[]) as Guess[];
+  const guesses = guessesAll.filter((g) => (g.roundId ?? 0) === roundId);
+
+  const hasSubmitted = !!currentPlayerId && submissions.some((s) => s.playerId === currentPlayerId);
+
+  const nonHostPlayers = gameState.players.filter((p) => !p.isHost);
+  const submittedIds = new Set(submissions.map((s) => s.playerId));
+  const remainingPlayers = nonHostPlayers.filter((p) => !submittedIds.has(p.id));
+
+  const mysterySubmissions = submissions.filter((s) => s.playerId !== currentPlayerId);
+  const myGuesses = guesses.filter((g) => g.voterId === currentPlayerId);
+  const allGuessesCompleted =
+    mysterySubmissions.length > 0 &&
+    mysterySubmissions.every((s) =>
+      myGuesses.some((g) => g.submissionId === submissionKey(s.song.id, roundId))
+    );
+
+  // ---------------------------
+  // Render start / join
   // ---------------------------
   if (!gameState.roomId) {
     return (
@@ -950,9 +977,7 @@ export default function App() {
             <h1 className="text-4xl font-black tracking-tight mb-2 uppercase italic">
               Tune Trivia
             </h1>
-            <p className="text-gray-400 font-medium">
-              The social music guessing game.
-            </p>
+            <p className="text-gray-400 font-medium">The social music guessing game.</p>
           </div>
 
           <div className="space-y-4">
@@ -1002,7 +1027,7 @@ export default function App() {
   }
 
   // ---------------------------
-  // RENDER: Lobby
+  // Lobby
   // ---------------------------
   if (gameState.phase === GamePhase.LOBBY) {
     return (
@@ -1043,9 +1068,7 @@ export default function App() {
             ) : (
               <div className="flex items-center gap-3 text-[#1DB954] animate-pulse">
                 <RefreshCw className="animate-spin" />
-                <span className="font-bold uppercase tracking-widest">
-                  Waiting for host to start...
-                </span>
+                <span className="font-bold uppercase tracking-widest">Waiting for host to start...</span>
               </div>
             )}
           </div>
@@ -1054,24 +1077,8 @@ export default function App() {
     );
   }
 
-  // Derived vars
-  const hasSubmitted = gameState.submissions?.some((s) => s.playerId === currentPlayerId);
-  const nonHostPlayers = gameState.players.filter((p) => !p.isHost);
-  const submittedPlayerIds = new Set((gameState.submissions || []).map((s: any) => s.playerId));
-  const remainingPlayers = nonHostPlayers.filter((p) => !submittedPlayerIds.has(p.id));
-
-  const mysterySubmissions =
-    gameState.submissions?.filter((s) => s.playerId !== currentPlayerId) || [];
-  const playerGuessesForRound =
-    gameState.guesses?.filter((g) => g.voterId === currentPlayerId) || [];
-  const allGuessesCompleted =
-    mysterySubmissions.length > 0 &&
-    mysterySubmissions.every((s) =>
-      playerGuessesForRound.some((g) => g.submissionId === submissionKey(s.song.id))
-    );
-
   // ---------------------------
-  // RENDER: Main shell + phases
+  // Main shell + settings
   // ---------------------------
   return (
     <div className="min-h-screen bg-[#121212] text-white flex flex-col selection:bg-[#1DB954] selection:text-black">
@@ -1081,7 +1088,6 @@ export default function App() {
             <Music size={18} className="text-black" />
           </div>
           <span className="font-black text-xl italic hidden sm:block">Tune Trivia</span>
-
           {(spotifyToken || hostToken) && (
             <span className="text-[10px] bg-[#1DB954]/20 text-[#1DB954] px-2 py-1 rounded font-bold uppercase">
               Spotify Linked
@@ -1117,9 +1123,8 @@ export default function App() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-gray-300">
                     <Music size={18} className="text-[#1DB954]" />
-                    <span className="text-sm font-black uppercase tracking-widest">Spotify API (PKCE)</span>
+                    <span className="text-sm font-black uppercase tracking-widest">Spotify (PKCE)</span>
                   </div>
-
                   <button
                     onClick={() => {
                       setSpotifyToken(null);
@@ -1136,7 +1141,7 @@ export default function App() {
 
                 <div className="space-y-2">
                   <label className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
-                    Redirect URI (must match Spotify dashboard EXACTLY)
+                    Redirect URI
                   </label>
                   <div className="flex gap-2">
                     <code className="flex-1 bg-[#121212] px-4 py-3 rounded-xl text-[#1DB954] text-xs font-mono truncate border border-white/5">
@@ -1195,9 +1200,6 @@ export default function App() {
                       Refresh
                     </button>
                   </div>
-                  <p className="text-xs text-gray-500">
-                    If Spotify ever shows “Connected to Tune Trivia”, open Spotify → Devices and select your iPad/laptop again.
-                  </p>
                 </div>
               </div>
 
@@ -1224,22 +1226,20 @@ export default function App() {
                 <p className="text-[#1DB954] font-black tracking-[0.6em] text-xs sm:text-sm uppercase">
                   Round {gameState.currentQuestionIndex + 1}
                 </p>
-                <h2 className="text-4xl sm:text-6xl md:text-8xl font-black leading-tight tracking-tighter italic text-white drop-shadow-[0_10px_40px_rgba(29,185,84,0.3)] px-4">
+                <h2 className="text-4xl sm:text-6xl md:text-8xl font-black leading-tight tracking-tighter italic text-white px-4">
                   "{gameState.questions[gameState.currentQuestionIndex]}"
                 </h2>
               </div>
 
               {isHost ? (
                 <Button
-                  onClick={handleNextPrompt}
+                  onClick={openSubmissions}
                   className="py-5 sm:py-6 px-16 sm:px-24 text-2xl sm:text-3xl font-black rounded-full hover:scale-110 uppercase italic tracking-tighter"
                 >
                   Open Submissions
                 </Button>
               ) : (
-                <p className="animate-pulse text-gray-500 font-bold uppercase tracking-widest">
-                  Waiting for host...
-                </p>
+                <p className="animate-pulse text-gray-500 font-bold uppercase tracking-widest">Waiting for host...</p>
               )}
             </div>
           )}
@@ -1256,7 +1256,6 @@ export default function App() {
                 </h3>
               </div>
 
-              {/* ✅ Host does NOT submit - host sees progress */}
               {isHost ? (
                 <div className="bg-[#181818] border border-[#282828] rounded-[2.5rem] p-8 sm:p-10 space-y-6 text-center">
                   <h3 className="text-3xl font-black italic">Collecting songs…</h3>
@@ -1287,9 +1286,7 @@ export default function App() {
                 <div className="flex flex-col items-center justify-center py-20 space-y-6">
                   <Check size={80} className="text-[#1DB954] mx-auto animate-bounce" />
                   <h2 className="text-3xl font-black italic">TUNE LOCKED</h2>
-                  <p className="text-gray-500 font-bold uppercase tracking-widest">
-                    Waiting for other players...
-                  </p>
+                  <p className="text-gray-500 font-bold uppercase tracking-widest">Waiting for other players...</p>
                 </div>
               ) : (
                 <>
@@ -1325,9 +1322,7 @@ export default function App() {
                     {isSearching ? (
                       <div className="col-span-full flex flex-col items-center justify-center py-24 gap-6 text-gray-500">
                         <RefreshCw className="animate-spin text-[#1DB954]" size={64} />
-                        <p className="font-black text-xl animate-pulse tracking-widest uppercase italic">
-                          Digging Crates...
-                        </p>
+                        <p className="font-black text-xl animate-pulse tracking-widest uppercase italic">Digging Crates...</p>
                       </div>
                     ) : searchResults.length > 0 ? (
                       searchResults.map((song) => (
@@ -1341,18 +1336,14 @@ export default function App() {
                             <h4 className="font-black text-xl sm:text-2xl truncate group-hover:text-[#1DB954] transition-colors tracking-tight leading-none mb-1">
                               {song.title}
                             </h4>
-                            <p className="text-sm sm:text-lg text-gray-500 font-bold truncate italic">
-                              {song.artist}
-                            </p>
+                            <p className="text-sm sm:text-lg text-gray-500 font-bold truncate italic">{song.artist}</p>
                           </div>
                         </div>
                       ))
                     ) : (
                       <div className="col-span-full text-center py-24 text-gray-800 bg-[#181818]/30 rounded-[4rem] border-2 border-dashed border-[#282828]">
                         <Music size={100} className="mx-auto mb-8 opacity-5" />
-                        <p className="text-3xl font-black uppercase tracking-tighter opacity-20 italic px-4">
-                          Find the perfect sound
-                        </p>
+                        <p className="text-3xl font-black uppercase tracking-tighter opacity-20 italic px-4">Find the perfect sound</p>
                       </div>
                     )}
                   </div>
@@ -1367,13 +1358,9 @@ export default function App() {
               <div className="text-center space-y-6">
                 <div className="inline-flex items-center gap-4 bg-[#1DB954]/10 px-8 py-3 rounded-full border border-[#1DB954]/20">
                   <Headphones size={20} className="text-[#1DB954]" />
-                  <span className="font-black uppercase tracking-[0.5em] text-xs">
-                    The Listening Lounge
-                  </span>
+                  <span className="font-black uppercase tracking-[0.5em] text-xs">The Listening Lounge</span>
                 </div>
-                <h2 className="text-5xl sm:text-7xl font-black tracking-tighter uppercase italic leading-none">
-                  Party Mix
-                </h2>
+                <h2 className="text-5xl sm:text-7xl font-black tracking-tighter uppercase italic leading-none">Party Mix</h2>
               </div>
 
               <div className="relative max-w-4xl mx-auto">
@@ -1384,9 +1371,9 @@ export default function App() {
                     <div className="w-48 h-48 sm:w-64 sm:h-64 rounded-full bg-black border-[10px] border-[#181818] shadow-2xl relative flex items-center justify-center animate-[spin_6s_linear_infinite]">
                       <div className="absolute inset-4 rounded-full border-2 border-white/5"></div>
                       <div className="absolute inset-10 rounded-full border-2 border-white/5"></div>
-                      {gameState.submissions[listeningIndex] && (
+                      {submissions[listeningIndex] && (
                         <img
-                          src={gameState.submissions[listeningIndex].song.albumArt}
+                          src={submissions[listeningIndex].song.albumArt}
                           className="w-20 h-20 sm:w-32 sm:h-32 rounded-full border-4 border-black"
                         />
                       )}
@@ -1394,22 +1381,20 @@ export default function App() {
                   </div>
 
                   <div className="flex-1 text-center md:text-left space-y-4 relative z-10">
-                    {gameState.submissions[listeningIndex] && (
+                    {submissions[listeningIndex] && (
                       <>
                         <p className="text-[#1DB954] font-black uppercase tracking-[0.4em] text-xs italic">
-                          Track {listeningIndex + 1} of {gameState.submissions.length}
+                          Track {listeningIndex + 1} of {submissions.length}
                         </p>
                         <h3 className="text-4xl sm:text-6xl font-black tracking-tighter leading-tight italic">
-                          {gameState.submissions[listeningIndex].song.title}
+                          {submissions[listeningIndex].song.title}
                         </h3>
-                        <p className="text-2xl sm:text-3xl text-gray-500 font-bold italic">
-                          {gameState.submissions[listeningIndex].song.artist}
-                        </p>
+                        <p className="text-2xl sm:text-3xl text-gray-500 font-bold italic">{submissions[listeningIndex].song.artist}</p>
 
-                        {isHost && !gameState.submissions[listeningIndex].song.id.startsWith("ai-") && (
+                        {isHost && !submissions[listeningIndex].song.id.startsWith("ai-") && (
                           <div className="pt-3 flex gap-3 flex-wrap">
                             <Button
-                              onClick={() => playOnDevice(gameState.submissions[listeningIndex].song.id)}
+                              onClick={() => playOnDevice(submissions[listeningIndex].song.id)}
                               className="px-10 py-4 text-lg uppercase tracking-widest"
                             >
                               Play on Spotify
@@ -1421,9 +1406,7 @@ export default function App() {
                         )}
 
                         {isAnnouncing && (
-                          <div className="text-xs text-gray-500 font-bold uppercase tracking-widest">
-                            Announcing…
-                          </div>
+                          <div className="text-xs text-gray-500 font-bold uppercase tracking-widest">Announcing…</div>
                         )}
                       </>
                     )}
@@ -1440,7 +1423,7 @@ export default function App() {
                       <ChevronRight size={32} className="rotate-180" />
                     </button>
 
-                    {listeningIndex < gameState.submissions.length - 1 ? (
+                    {listeningIndex < submissions.length - 1 ? (
                       <Button onClick={() => setListeningIndex((prev) => prev + 1)} className="flex-1 py-6 text-2xl">
                         Next Track
                       </Button>
@@ -1451,8 +1434,8 @@ export default function App() {
                     )}
 
                     <button
-                      onClick={() => setListeningIndex((prev) => Math.min(gameState.submissions.length - 1, prev + 1))}
-                      disabled={listeningIndex === gameState.submissions.length - 1}
+                      onClick={() => setListeningIndex((prev) => Math.min(submissions.length - 1, prev + 1))}
+                      disabled={listeningIndex === submissions.length - 1}
                       className="p-6 bg-[#282828] hover:bg-[#3e3e3e] rounded-full text-white disabled:opacity-20 transition-all"
                     >
                       <ChevronRight size={32} />
@@ -1471,19 +1454,13 @@ export default function App() {
           {gameState.phase === GamePhase.VOTING && (
             <div className="space-y-12 animate-in fade-in duration-500 pb-20">
               <div className="text-center space-y-4">
-                <h2 className="text-4xl sm:text-6xl md:text-8xl font-black tracking-tighter uppercase italic">
-                  The Mixup
-                </h2>
-                <p className="text-gray-400 font-medium text-xl sm:text-2xl">
-                  Who curated these selections?
-                </p>
+                <h2 className="text-4xl sm:text-6xl md:text-8xl font-black tracking-tighter uppercase italic">The Mixup</h2>
+                <p className="text-gray-400 font-medium text-xl sm:text-2xl">Who curated these selections?</p>
               </div>
 
               {isHost ? (
                 <div className="text-center p-8 bg-[#181818] border border-[#282828] rounded-[2.5rem]">
-                  <p className="text-gray-400 font-bold uppercase tracking-widest">
-                    Host is running the round (no voting)
-                  </p>
+                  <p className="text-gray-400 font-bold uppercase tracking-widest">Host is running the round (no voting)</p>
                   <div className="pt-6">
                     <Button onClick={finalizeGuesses} className="px-16 py-6 text-2xl font-black rounded-full uppercase italic tracking-tighter">
                       Reveal Results
@@ -1493,16 +1470,13 @@ export default function App() {
               ) : (
                 <>
                   <div className="grid lg:grid-cols-2 gap-8">
-                    {gameState.submissions.map((sub) => {
+                    {submissions.map((sub) => {
                       if (sub.playerId === currentPlayerId) return null;
 
-                      const currentGuess = gameState.guesses
-                        ? gameState.guesses.find(
-                            (g) =>
-                              g.voterId === currentPlayerId &&
-                              g.submissionId === submissionKey(sub.song.id)
-                          )
-                        : null;
+                      const key = submissionKey(sub.song.id, roundId);
+                      const currentGuess = guesses.find(
+                        (g) => g.voterId === currentPlayerId && g.submissionId === key
+                      );
 
                       return (
                         <div
@@ -1512,26 +1486,17 @@ export default function App() {
                           }`}
                         >
                           <div className="w-full sm:w-48 h-48 sm:h-auto bg-[#282828] flex-shrink-0 relative overflow-hidden">
-                            <img
-                              src={sub.song.albumArt}
-                              className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-1000"
-                            />
+                            <img src={sub.song.albumArt} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-1000" />
                           </div>
 
                           <div className="flex-1 p-6 sm:p-8 flex flex-col justify-between">
                             <div>
-                              <h4 className="text-2xl sm:text-3xl font-black mb-1 leading-tight tracking-tight">
-                                {sub.song.title}
-                              </h4>
-                              <p className="text-lg sm:text-xl text-gray-500 font-bold mb-6 italic">
-                                {sub.song.artist}
-                              </p>
+                              <h4 className="text-2xl sm:text-3xl font-black mb-1 leading-tight tracking-tight">{sub.song.title}</h4>
+                              <p className="text-lg sm:text-xl text-gray-500 font-bold mb-6 italic">{sub.song.artist}</p>
                             </div>
 
                             <div className="space-y-4">
-                              <p className="text-[10px] font-black uppercase tracking-[0.5em] text-[#1DB954]">
-                                Pick a Player
-                              </p>
+                              <p className="text-[10px] font-black uppercase tracking-[0.5em] text-[#1DB954]">Pick a Player</p>
                               <div className="flex flex-wrap gap-2">
                                 {gameState.players
                                   .filter((p) => p.id !== currentPlayerId && !p.isHost)
@@ -1573,13 +1538,13 @@ export default function App() {
           {/* REVEAL */}
           {gameState.phase === GamePhase.REVEAL &&
             (() => {
-              const currentSub = gameState.submissions[gameState.currentRevealIndex];
+              const currentSub = submissions[gameState.currentRevealIndex];
               if (!currentSub) return <div>Loading reveal...</div>;
 
               const owner = gameState.players.find((p) => p.id === currentSub.playerId);
-              const allGuesses = gameState.guesses || [];
+              const key = submissionKey(currentSub.song.id, roundId);
 
-              const guessesForSub = allGuesses.filter((g) => g.submissionId === submissionKey(currentSub.song.id));
+              const guessesForSub = guesses.filter((g) => g.submissionId === key);
               const correctDetectives = guessesForSub.filter((g) => g.targetPlayerId === currentSub.playerId);
               const bamboozled = guessesForSub.filter((g) => g.targetPlayerId !== currentSub.playerId);
 
@@ -1587,44 +1552,28 @@ export default function App() {
                 <div className="space-y-16 py-10 animate-in fade-in duration-1000">
                   <div className="text-center space-y-10 px-4">
                     <div className="inline-flex items-center gap-4 bg-[#1DB954]/10 px-8 py-3 rounded-full border border-[#1DB954]/20">
-                      <span className="font-black uppercase tracking-[0.5em] text-xs">
-                        Reveal #{gameState.currentRevealIndex + 1}
-                      </span>
+                      <span className="font-black uppercase tracking-[0.5em] text-xs">Reveal #{gameState.currentRevealIndex + 1}</span>
                     </div>
 
                     <div className="flex flex-col items-center">
                       <div className="relative group mb-10">
                         <div className="absolute inset-0 bg-[#1DB954] blur-[80px] opacity-20 rounded-full animate-pulse"></div>
-                        <img
-                          src={currentSub.song.albumArt}
-                          className="w-48 h-48 sm:w-64 sm:h-64 rounded-[2.5rem] shadow-2xl border-[10px] border-[#181818] relative z-10"
-                        />
+                        <img src={currentSub.song.albumArt} className="w-48 h-48 sm:w-64 sm:h-64 rounded-[2.5rem] shadow-2xl border-[10px] border-[#181818] relative z-10" />
                       </div>
-                      <h2 className="text-4xl sm:text-7xl font-black leading-tight tracking-tighter text-white italic drop-shadow-2xl">
-                        "{currentSub.song.title}"
-                      </h2>
-                      <p className="text-2xl sm:text-4xl text-gray-500 font-black italic tracking-tighter">
-                        — {currentSub.song.artist}
-                      </p>
+                      <h2 className="text-4xl sm:text-7xl font-black leading-tight tracking-tighter text-white italic drop-shadow-2xl">"{currentSub.song.title}"</h2>
+                      <p className="text-2xl sm:text-4xl text-gray-500 font-black italic tracking-tighter">— {currentSub.song.artist}</p>
                     </div>
                   </div>
 
                   <div className="grid lg:grid-cols-3 gap-8 items-start">
                     <div className="space-y-6 animate-in slide-in-from-left delay-300 duration-700">
-                      <div className="flex items-center gap-3 px-6 text-[#1DB954]">
-                        <Eye size={22} />
-                        <h4 className="font-black uppercase tracking-widest text-sm">Correct Detectives (+10 pts)</h4>
-                      </div>
-
+                      <div className="flex items-center gap-3 px-6 text-[#1DB954]"><Eye size={22} /><h4 className="font-black uppercase tracking-widest text-sm">Correct Detectives (+10 pts)</h4></div>
                       <div className="grid gap-3">
                         {correctDetectives.length > 0 ? (
                           correctDetectives.map((g) => {
                             const player = gameState.players.find((p) => p.id === g.voterId);
                             return (
-                              <div
-                                key={g.voterId}
-                                className="bg-[#1DB954]/10 border border-[#1DB954]/30 p-4 rounded-2xl flex items-center gap-4 animate-in zoom-in"
-                              >
+                              <div key={g.voterId} className="bg-[#1DB954]/10 border border-[#1DB954]/30 p-4 rounded-2xl flex items-center gap-4 animate-in zoom-in">
                                 <img src={player?.avatar} className="w-10 h-10 rounded-full border-2 border-[#1DB954]" />
                                 <span className="font-bold text-lg">{player?.name}</span>
                                 <Check className="ml-auto text-[#1DB954]" size={20} />
@@ -1643,38 +1592,24 @@ export default function App() {
                       <p className="font-black uppercase tracking-[0.3em] text-xs">The Choice Of</p>
                       <div className="relative inline-block">
                         <img src={owner?.avatar} className="w-40 h-40 rounded-full border-[12px] border-black/10 shadow-xl mx-auto" />
-                        <div className="absolute -bottom-4 -right-4 bg-black text-white p-4 rounded-full shadow-2xl scale-125">
-                          <Disc className="animate-spin" size={24} />
-                        </div>
+                        <div className="absolute -bottom-4 -right-4 bg-black text-white p-4 rounded-full shadow-2xl scale-125"><Disc className="animate-spin" size={24} /></div>
                       </div>
                       <h3 className="text-4xl sm:text-6xl font-black tracking-tighter uppercase italic">{owner?.name}</h3>
                     </div>
 
                     <div className="space-y-6 animate-in slide-in-from-right delay-300 duration-700">
-                      <div className="flex items-center gap-3 px-6 text-red-500">
-                        <XCircle size={22} />
-                        <h4 className="font-black uppercase tracking-widest text-sm">Bamboozled Players</h4>
-                      </div>
-
+                      <div className="flex items-center gap-3 px-6 text-red-500"><XCircle size={22} /><h4 className="font-black uppercase tracking-widest text-sm">Bamboozled Players</h4></div>
                       <div className="grid gap-3">
                         {bamboozled.length > 0 ? (
                           bamboozled.map((g) => {
                             const player = gameState.players.find((p) => p.id === g.voterId);
                             const mistakenIdentity = gameState.players.find((p) => p.id === g.targetPlayerId);
                             return (
-                              <div
-                                key={g.voterId}
-                                className="bg-red-500/5 border border-red-500/20 p-4 rounded-2xl flex items-center gap-4 animate-in zoom-in"
-                              >
-                                <img
-                                  src={player?.avatar}
-                                  className="w-10 h-10 rounded-full border-2 border-red-500/30 opacity-50"
-                                />
+                              <div key={g.voterId} className="bg-red-500/5 border border-red-500/20 p-4 rounded-2xl flex items-center gap-4 animate-in zoom-in">
+                                <img src={player?.avatar} className="w-10 h-10 rounded-full border-2 border-red-500/30 opacity-50" />
                                 <div className="flex flex-col">
                                   <span className="font-bold">{player?.name}</span>
-                                  <span className="text-[10px] uppercase font-black text-gray-500">
-                                    Guessed {mistakenIdentity?.name}
-                                  </span>
+                                  <span className="text-[10px] uppercase font-black text-gray-500">Guessed {mistakenIdentity?.name}</span>
                                 </div>
                               </div>
                             );
@@ -1694,7 +1629,7 @@ export default function App() {
                         onClick={nextReveal}
                         className="px-32 py-8 text-3xl font-black rounded-full bg-white text-black hover:bg-gray-100 transition-all hover:scale-105 shadow-2xl uppercase italic tracking-tighter"
                       >
-                        {gameState.currentRevealIndex < gameState.submissions.length - 1 ? "NEXT REVEAL" : "FINAL SCORES"}{" "}
+                        {gameState.currentRevealIndex < submissions.length - 1 ? "NEXT REVEAL" : "FINAL SCORES"}{" "}
                         <ChevronRight size={48} className="inline-block ml-4" />
                       </Button>
                     </div>
@@ -1726,19 +1661,11 @@ export default function App() {
                         }`}
                       >
                         <div className="flex items-center gap-6 sm:gap-12">
-                          <div
-                            className={`w-12 h-12 sm:w-20 sm:h-20 rounded-full flex items-center justify-center font-black text-xl sm:text-4xl ${
-                              idx === 0 ? "bg-[#1DB954] text-black shadow-xl" : "bg-[#282828] text-gray-500"
-                            }`}
-                          >
-                            {idx + 1}
-                          </div>
+                          <div className={`w-12 h-12 sm:w-20 sm:h-20 rounded-full flex items-center justify-center font-black text-xl sm:text-4xl ${idx === 0 ? "bg-[#1DB954] text-black shadow-xl" : "bg-[#282828] text-gray-500"}`}>{idx + 1}</div>
                           <img src={player.avatar} className="w-12 h-12 sm:w-24 sm:h-24 rounded-full border-4 sm:border-[8px] border-transparent" />
                           <span className="font-black text-2xl sm:text-5xl tracking-tighter uppercase italic">{player.name}</span>
                         </div>
-                        <div className="text-4xl sm:text-7xl md:text-[8rem] font-black text-[#1DB954] tracking-tighter drop-shadow-lg">
-                          {player.score}
-                        </div>
+                        <div className="text-4xl sm:text-7xl md:text-[8rem] font-black text-[#1DB954] tracking-tighter drop-shadow-lg">{player.score}</div>
                       </div>
                     ))}
                 </div>
@@ -1746,10 +1673,7 @@ export default function App() {
 
               {isHost && (
                 <div className="flex justify-center pt-8 sm:pt-16">
-                  <Button
-                    onClick={nextQuestion}
-                    className="w-full md:w-[40rem] py-6 sm:py-8 text-2xl sm:text-4xl font-black rounded-full bg-white text-black shadow-2xl uppercase italic tracking-tighter"
-                  >
+                  <Button onClick={nextQuestion} className="w-full md:w-[40rem] py-6 sm:py-8 text-2xl sm:text-4xl font-black rounded-full bg-white text-black shadow-2xl uppercase italic tracking-tighter">
                     {gameState.currentQuestionIndex < 9 ? "Next Round" : "Finale"}
                   </Button>
                 </div>
@@ -1761,39 +1685,9 @@ export default function App() {
           {gameState.phase === GamePhase.FINAL && (
             <div className="text-center space-y-16 sm:space-y-24 py-16 sm:py-24 animate-in fade-in zoom-in duration-1000">
               <div className="space-y-8">
-                <div className="flex justify-center mb-10 sm:mb-16">
-                  <Trophy size={180} className="text-[#1DB954] animate-bounce sm:size-[240px]" />
-                </div>
-                <h2 className="text-8xl sm:text-[12rem] md:text-[18rem] font-black tracking-tighter leading-none uppercase italic text-[#1DB954] drop-shadow-2xl">
-                  KING
-                </h2>
-                <p className="text-2xl sm:text-5xl text-gray-600 font-black uppercase tracking-[0.5em] italic px-4">
-                  Master Curator
-                </p>
-              </div>
-
-              <div className="flex flex-col items-center space-y-12 bg-[#181818]/90 backdrop-blur-xl p-10 sm:p-20 rounded-[5rem] border-2 border-white/5 max-w-4xl mx-auto shadow-2xl">
-                {(() => {
-                  const winner = [...gameState.players]
-                    .filter((p) => !p.isHost)
-                    .sort((a, b) => b.score - a.score)[0];
-                  return (
-                    <>
-                      <img
-                        src={winner?.avatar}
-                        className="w-48 h-48 sm:w-72 sm:h-72 rounded-full border-[12px] sm:border-[20px] border-[#1DB954] shadow-2xl"
-                      />
-                      <div className="space-y-4">
-                        <h3 className="text-6xl sm:text-9xl font-black tracking-tighter italic uppercase px-4">
-                          {winner?.name}
-                        </h3>
-                        <div className="text-3xl sm:text-6xl font-black text-[#1DB954] uppercase tracking-[0.4em]">
-                          {winner?.score} PTS
-                        </div>
-                      </div>
-                    </>
-                  );
-                })()}
+                <div className="flex justify-center mb-10 sm:mb-16"><Trophy size={180} className="text-[#1DB954] animate-bounce sm:size-[240px]" /></div>
+                <h2 className="text-8xl sm:text-[12rem] md:text-[18rem] font-black tracking-tighter leading-none uppercase italic text-[#1DB954] drop-shadow-2xl">KING</h2>
+                <p className="text-2xl sm:text-5xl text-gray-600 font-black uppercase tracking-[0.5em] italic px-4">Master Curator</p>
               </div>
 
               <div className="flex flex-col sm:flex-row gap-8 sm:gap-12 justify-center pt-12 sm:pt-24 px-4">
