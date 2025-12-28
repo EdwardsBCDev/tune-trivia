@@ -192,11 +192,17 @@ function AppInner() {
   // --- Local UI State ---
   const [roomCodeInput, setRoomCodeInput] = useState("");
   const [currentPlayerId, setCurrentPlayerId] = useState<string | null>(() =>
-    sessionStorage.getItem("tune_player_id")
+    sessionStorage.getItem("tune_player_id") || localStorage.getItem("tune_player_id")
   );
   const [playerName, setPlayerName] = useState(
-    () => sessionStorage.getItem("tune_player_name") || ""
+    () =>
+      sessionStorage.getItem("tune_player_name") ||
+      localStorage.getItem("tune_player_name") ||
+      ""
   );
+
+  // --- Rejoin flow state ---
+  const [isRejoining, setIsRejoining] = useState(false);
 
   // --- Game State ---
   const [gameState, setGameState] = useState<
@@ -213,7 +219,8 @@ function AppInner() {
     roundId: 0,
   });
 
-  const roundId: number = typeof gameState.roundId === "number" ? gameState.roundId : 0;
+  const roundId: number =
+    typeof gameState.roundId === "number" ? gameState.roundId : 0;
 
   // --- Search ---
   const [searchQuery, setSearchQuery] = useState("");
@@ -269,14 +276,6 @@ function AppInner() {
     localStorage.setItem("spotify_redirect_uri_override", manualRedirectUri);
   }, [manualRedirectUri]);
 
-  // Ensure we keep a playerId if sessionStorage exists
-  useEffect(() => {
-    if (!currentPlayerId) {
-      const existing = sessionStorage.getItem("tune_player_id");
-      if (existing) setCurrentPlayerId(existing);
-    }
-  }, [currentPlayerId]);
-
   // --- Redirect URI logic ---
   const suggestedRedirectUri = useMemo(() => {
     if (typeof window === "undefined") return manualRedirectUri || "";
@@ -309,6 +308,66 @@ function AppInner() {
     return ref(db, `rooms/${gameState.roomId}`);
   }, [db, gameState.roomId]);
 
+  // ---------------------------
+  // AUTO-REJOIN ON REFRESH
+  // ---------------------------
+  useEffect(() => {
+    const tryRejoin = async () => {
+      if (!db) return;
+      if (gameState.roomId) return;
+
+      const storedRoom =
+        sessionStorage.getItem("tune_room_id") ||
+        localStorage.getItem("tune_room_id");
+      const storedPlayerId =
+        sessionStorage.getItem("tune_player_id") ||
+        localStorage.getItem("tune_player_id");
+      const storedName =
+        sessionStorage.getItem("tune_player_name") ||
+        localStorage.getItem("tune_player_name");
+
+      if (!storedRoom || !storedPlayerId || !storedName) return;
+
+      setIsRejoining(true);
+
+      try {
+        const rRef = ref(db, `rooms/${storedRoom}`);
+        const snap = await get(rRef);
+        if (!snap.exists()) return;
+
+        const room = snap.val();
+        const players = Array.isArray(room.players) ? room.players : [];
+        const alreadyThere = players.some((p: any) => p.id === storedPlayerId);
+
+        if (!alreadyThere) {
+          const rejoinedPlayer: Player = {
+            id: storedPlayerId,
+            name: storedName,
+            score: 0,
+            isHost: false,
+            avatar: `https://picsum.photos/seed/${storedPlayerId}/100/100`,
+          };
+          await update(rRef, { players: [...players, rejoinedPlayer] });
+          room.players = [...players, rejoinedPlayer];
+        }
+
+        setCurrentPlayerId(storedPlayerId);
+        setPlayerName(storedName);
+        sessionStorage.setItem("tune_player_id", storedPlayerId);
+        sessionStorage.setItem("tune_player_name", storedName);
+        localStorage.setItem("tune_player_id", storedPlayerId);
+        localStorage.setItem("tune_player_name", storedName);
+
+        setGameState((prev: any) => ({ ...prev, ...room }));
+      } finally {
+        setIsRejoining(false);
+      }
+    };
+
+    tryRejoin();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db, gameState.roomId]);
+
   // --- Firebase sync (SANITISE to prevent crashes / blank screens) ---
   useEffect(() => {
     if (!gameState.roomId || !db) return;
@@ -323,15 +382,23 @@ function AppInner() {
       const safeSubmissions: Submission[] = Array.isArray(data.submissions)
         ? data.submissions
             .filter((s: any) => s && typeof s === "object")
-            .filter((s: any) => s.playerId && s.song && typeof s.song === "object")
-            .filter((s: any) => typeof s.song.id === "string" && typeof s.song.title === "string")
+            .filter(
+              (s: any) =>
+                s.playerId && s.song && typeof s.song === "object"
+            )
+            .filter(
+              (s: any) =>
+                typeof s.song.id === "string" && typeof s.song.title === "string"
+            )
             .map((s: any) => ({
               playerId: String(s.playerId),
               song: {
                 id: String(s.song.id),
                 title: String(s.song.title),
                 artist: String(s.song.artist || "Unknown"),
-                albumArt: String(s.song.albumArt || "https://picsum.photos/300/300"),
+                albumArt: String(
+                  s.song.albumArt || "https://picsum.photos/300/300"
+                ),
               },
               roundId: typeof s.roundId === "number" ? s.roundId : 0,
             }))
@@ -361,7 +428,8 @@ function AppInner() {
         submissions: safeSubmissions,
         guesses: safeGuesses,
         questions: safeQuestions,
-        roundId: typeof data.roundId === "number" ? data.roundId : (prev.roundId ?? 0),
+        roundId:
+          typeof data.roundId === "number" ? data.roundId : prev.roundId ?? 0,
       }));
 
       if (data.hostToken) setHostToken(String(data.hostToken));
@@ -371,7 +439,9 @@ function AppInner() {
   }, [gameState.roomId]);
 
   // --- Host detection ---
-  const myPlayer = gameState.players.find((p: Player) => p.id === currentPlayerId);
+  const myPlayer = (gameState.players as Player[]).find(
+    (p) => p.id === currentPlayerId
+  );
   const isHost = !!myPlayer?.isHost;
 
   // Reset local UI bits on round change
@@ -385,7 +455,9 @@ function AppInner() {
   // Share host token to guests
   useEffect(() => {
     if (isHost && spotifyToken && gameState.roomId && db) {
-      update(ref(db, `rooms/${gameState.roomId}`), { hostToken: spotifyToken }).catch(() => {});
+      update(ref(db, `rooms/${gameState.roomId}`), {
+        hostToken: spotifyToken,
+      }).catch(() => {});
     }
   }, [isHost, spotifyToken, gameState.roomId]);
 
@@ -408,10 +480,17 @@ function AppInner() {
     setIsAnnouncing(true);
 
     try {
-      const base64Data = await generateAnnouncementAudio(song.title, song.artist, pName);
+      const base64Data = await generateAnnouncementAudio(
+        song.title,
+        song.artist,
+        pName
+      );
       if (base64Data && audioContextRef.current) {
         const audioData = decodeBase64(base64Data);
-        const audioBuffer = await decodeAudioData(audioData, audioContextRef.current);
+        const audioBuffer = await decodeAudioData(
+          audioData,
+          audioContextRef.current
+        );
         const source = audioContextRef.current.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(audioContextRef.current.destination);
@@ -443,7 +522,10 @@ function AppInner() {
 
     localStorage.setItem("spotify_pkce_verifier", verifier);
     localStorage.setItem("spotify_redirect_uri_used", finalUri);
-    localStorage.setItem("spotify_post_auth_path", window.location.pathname + window.location.search);
+    localStorage.setItem(
+      "spotify_post_auth_path",
+      window.location.pathname + window.location.search
+    );
 
     const scopes = [
       "user-read-playback-state",
@@ -454,7 +536,9 @@ function AppInner() {
     ].join(" ");
 
     const authUrl =
-      `${SPOTIFY_AUTH_ENDPOINT}?client_id=${encodeURIComponent(spotifyClientIdRef.current)}` +
+      `${SPOTIFY_AUTH_ENDPOINT}?client_id=${encodeURIComponent(
+        spotifyClientIdRef.current
+      )}` +
       `&response_type=code` +
       `&redirect_uri=${encodeURIComponent(finalUri)}` +
       `&scope=${encodeURIComponent(scopes)}` +
@@ -470,7 +554,9 @@ function AppInner() {
     if (!refreshToken) return null;
 
     const clientIdToUse =
-      spotifyClientIdRef.current || localStorage.getItem("spotify_client_id") || "";
+      spotifyClientIdRef.current ||
+      localStorage.getItem("spotify_client_id") ||
+      "";
     if (!clientIdToUse) return null;
 
     const body = new URLSearchParams();
@@ -494,7 +580,10 @@ function AppInner() {
     const expiresIn = data.expires_in as number;
 
     localStorage.setItem("spotify_access_token", accessToken);
-    localStorage.setItem("spotify_token_expiry", String(Date.now() + expiresIn * 1000));
+    localStorage.setItem(
+      "spotify_token_expiry",
+      String(Date.now() + expiresIn * 1000)
+    );
     setSpotifyToken(accessToken);
     return accessToken;
   };
@@ -541,7 +630,9 @@ function AppInner() {
       const verifier = localStorage.getItem("spotify_pkce_verifier");
       const redirectUriUsed = localStorage.getItem("spotify_redirect_uri_used");
       const clientIdToUse =
-        spotifyClientIdRef.current || localStorage.getItem("spotify_client_id") || "";
+        spotifyClientIdRef.current ||
+        localStorage.getItem("spotify_client_id") ||
+        "";
 
       if (!clientIdToUse || !verifier || !redirectUriUsed) {
         alert("Spotify auth missing verifier/client id. Click Sync again.");
@@ -574,7 +665,10 @@ function AppInner() {
 
       localStorage.setItem("spotify_access_token", accessToken);
       if (refreshToken) localStorage.setItem("spotify_refresh_token", refreshToken);
-      localStorage.setItem("spotify_token_expiry", String(Date.now() + expiresIn * 1000));
+      localStorage.setItem(
+        "spotify_token_expiry",
+        String(Date.now() + expiresIn * 1000)
+      );
       setSpotifyToken(accessToken);
 
       const postAuthPath = localStorage.getItem("spotify_post_auth_path") || "/";
@@ -678,10 +772,14 @@ function AppInner() {
   // ---------------------------
   // Round-scoped derived arrays (UI)
   // ---------------------------
-  const submissionsAll: Submission[] = Array.isArray(gameState.submissions) ? gameState.submissions : [];
+  const submissionsAll: Submission[] = Array.isArray(gameState.submissions)
+    ? gameState.submissions
+    : [];
   const guessesAll: Guess[] = Array.isArray(gameState.guesses) ? gameState.guesses : [];
 
-  const submissions: Submission[] = submissionsAll.filter((s) => (s.roundId ?? 0) === roundId);
+  const submissions: Submission[] = submissionsAll.filter(
+    (s) => (s.roundId ?? 0) === roundId
+  );
   const guesses: Guess[] = guessesAll.filter((g) => (g.roundId ?? 0) === roundId);
 
   const nonHostPlayers = (Array.isArray(gameState.players) ? gameState.players : []).filter(
@@ -691,7 +789,8 @@ function AppInner() {
   const submittedIds = new Set(submissions.map((s) => s.playerId));
   const remainingPlayers = nonHostPlayers.filter((p: Player) => !submittedIds.has(p.id));
 
-  const hasSubmitted = !!currentPlayerId && submissions.some((s) => s.playerId === currentPlayerId);
+  const hasSubmitted =
+    !!currentPlayerId && submissions.some((s) => s.playerId === currentPlayerId);
 
   const mysterySubmissions = submissions.filter((s) => s.playerId !== currentPlayerId);
   const myGuesses = guesses.filter((g) => g.voterId === currentPlayerId);
@@ -702,8 +801,40 @@ function AppInner() {
       myGuesses.some((g) => g.submissionId === submissionKey(s.song.id, roundId))
     );
 
+  // ✅ Guess readiness / progress for host (like song submission status)
+  const guessProgress = useMemo(() => {
+    const players = (gameState.players as Player[]).filter((p) => !p.isHost);
+
+    const byPlayer = players.map((p) => {
+      const mySubmission = submissions.find((s) => s.playerId === p.id);
+      const mySongId = mySubmission?.song.id;
+
+      const requiredKeys = submissions
+        .filter((s) => s.song.id !== mySongId)
+        .map((s) => submissionKey(s.song.id, roundId));
+
+      const uniqueGuesses = new Set(
+        guesses.filter((g) => g.voterId === p.id).map((g) => g.submissionId)
+      );
+
+      const done = requiredKeys.filter((k) => uniqueGuesses.has(k)).length;
+      const required = requiredKeys.length;
+
+      return {
+        playerId: p.id,
+        name: p.name,
+        avatar: p.avatar,
+        done,
+        required,
+        ready: required > 0 && done >= required,
+      };
+    });
+
+    return { byPlayer, allReady: byPlayer.every((x) => x.ready) };
+  }, [gameState.players, submissions, guesses, roundId]);
+
   // ---------------------------
-  // Host auto-play in Listening (optional but helpful)
+  // Host auto-play in Listening
   // ---------------------------
   useEffect(() => {
     if (!isHost) return;
@@ -723,17 +854,6 @@ function AppInner() {
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
     alert("Copied to clipboard!");
-  };
-
-  const hardResetRoundState = async (targetPhase: GamePhase, rid: number) => {
-    if (!roomRef) return;
-    await update(roomRef, {
-      phase: targetPhase,
-      submissions: [], // wipe for that round (clients still filter by roundId anyway)
-      guesses: [],
-      currentRevealIndex: 0,
-      roundId: rid,
-    });
   };
 
   const createRoom = async () => {
@@ -770,6 +890,10 @@ function AppInner() {
 
     setCurrentPlayerId(hostId);
     sessionStorage.setItem("tune_player_id", hostId);
+    localStorage.setItem("tune_player_id", hostId);
+
+    sessionStorage.setItem("tune_room_id", newRoomId);
+    localStorage.setItem("tune_room_id", newRoomId);
 
     setGameState(initialGame);
   };
@@ -786,7 +910,8 @@ function AppInner() {
     if (!snapshot.exists()) return alert("Room not found!");
 
     const game = snapshot.val();
-    const newPlayerId = currentPlayerId || `p_${Date.now()}`;
+    const newPlayerId =
+      currentPlayerId || localStorage.getItem("tune_player_id") || `p_${Date.now()}`;
 
     const newPlayer: Player = {
       id: newPlayerId,
@@ -805,8 +930,13 @@ function AppInner() {
 
     sessionStorage.setItem("tune_player_id", newPlayerId);
     sessionStorage.setItem("tune_player_name", playerName);
-    setCurrentPlayerId(newPlayerId);
+    localStorage.setItem("tune_player_id", newPlayerId);
+    localStorage.setItem("tune_player_name", playerName);
 
+    sessionStorage.setItem("tune_room_id", code);
+    localStorage.setItem("tune_room_id", code);
+
+    setCurrentPlayerId(newPlayerId);
     setGameState(game);
   };
 
@@ -827,14 +957,8 @@ function AppInner() {
       // fallback
     }
 
-    let shuffled = shuffle(questions);
-    const lastFirst = localStorage.getItem("last_first_question") || "";
-    if (shuffled.length > 1 && shuffled[0] === lastFirst) {
-      [shuffled[0], shuffled[1]] = [shuffled[1], shuffled[0]];
-    }
-    localStorage.setItem("last_first_question", shuffled[0] || "");
+    const shuffled = shuffle(questions);
 
-    // Start at prompt; host then opens submissions
     await update(roomRef, {
       questions: shuffled,
       currentQuestionIndex: 0,
@@ -850,6 +974,7 @@ function AppInner() {
 
   const openSubmissions = async () => {
     if (!isHost || !roomRef) return;
+
     setSearchQuery("");
     setSearchResults([]);
     setSearchError(null);
@@ -857,19 +982,16 @@ function AppInner() {
 
     await update(roomRef, {
       phase: GamePhase.SUBMITTING,
-      // wipe arrays so nobody is "locked" from previous round
       submissions: [],
       guesses: [],
       currentRevealIndex: 0,
-      // keep roundId as-is
       roundId,
     });
   };
 
-  // IMPORTANT: append submissions (do NOT replace array)
   const submitSong = async (song: Song) => {
     if (!roomRef || !currentPlayerId) return;
-    if (isHost) return; // host never submits
+    if (isHost) return;
 
     setSearchQuery("");
     setSearchResults([]);
@@ -884,14 +1006,10 @@ function AppInner() {
       room.submissions = Array.isArray(room.submissions) ? room.submissions : [];
 
       const playingPlayers = room.players.filter((p: any) => !p.isHost);
-
-      // subs for this round
       const subsThisRound = room.submissions.filter((s: any) => (s.roundId ?? 0) === rid);
 
-      // prevent double-submit
       if (subsThisRound.some((s: any) => s.playerId === currentPlayerId)) return room;
 
-      // ✅ APPEND, do not replace
       room.submissions.push({ playerId: currentPlayerId, song, roundId: rid });
 
       const newCount = room.submissions.filter((s: any) => (s.roundId ?? 0) === rid).length;
@@ -972,7 +1090,6 @@ function AppInner() {
     await update(roomRef, { phase: GamePhase.VOTING });
   };
 
-  // IMPORTANT: upsert guess (do NOT replace array)
   const submitGuess = async (songId: string, targetPlayerId: string) => {
     if (!roomRef || !currentPlayerId) return;
     if (isHost) return;
@@ -985,7 +1102,6 @@ function AppInner() {
       const rid = typeof room.roundId === "number" ? room.roundId : 0;
       room.guesses = Array.isArray(room.guesses) ? room.guesses : [];
 
-      // remove existing guess for this voter+submission+round
       room.guesses = room.guesses.filter(
         (g: any) =>
           !(
@@ -1012,12 +1128,13 @@ function AppInner() {
     await update(roomRef, { phase: GamePhase.REVEAL, currentRevealIndex: 0 });
   };
 
-  // Reveal announcements
   useEffect(() => {
     if (gameState.phase !== GamePhase.REVEAL) return;
     const currentSub = submissions[gameState.currentRevealIndex];
     if (!currentSub) return;
-    const owner = (gameState.players as Player[]).find((p) => p.id === currentSub.playerId);
+    const owner = (gameState.players as Player[]).find(
+      (p) => p.id === currentSub.playerId
+    );
     if (owner) playAnnouncement(currentSub.song, owner.name);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameState.phase, gameState.currentRevealIndex, roundId]);
@@ -1027,17 +1144,17 @@ function AppInner() {
 
     const isLast = gameState.currentRevealIndex >= submissions.length - 1;
     if (!isLast) {
-      await update(roomRef, { currentRevealIndex: gameState.currentRevealIndex + 1 });
+      await update(roomRef, {
+        currentRevealIndex: gameState.currentRevealIndex + 1,
+      });
       return;
     }
 
-    // Score end-of-round (non-host only)
     const ownerByKey = new Map<string, string>();
     submissions.forEach((s) => ownerByKey.set(submissionKey(s.song.id, roundId), s.playerId));
 
     const updatedPlayers: Player[] = (gameState.players as Player[]).map((p) => {
       if (p.isHost) return p;
-
       const my = guesses.filter((g) => g.voterId === p.id);
       let correct = 0;
       for (const g of my) {
@@ -1069,7 +1186,6 @@ function AppInner() {
     await update(roomRef, {
       currentQuestionIndex: gameState.currentQuestionIndex + 1,
       roundId: newRoundId,
-      // important: return to PROMPT for host to open submissions
       phase: GamePhase.PROMPT,
       submissions: [],
       guesses: [],
@@ -1093,6 +1209,18 @@ function AppInner() {
   // ---------------------------
   // VIEWS
   // ---------------------------
+
+  // ✅ Rejoining screen (prevents landing page flash)
+  if (isRejoining) {
+    return (
+      <div className="min-h-screen bg-[#121212] text-white flex items-center justify-center p-6">
+        <div className="flex items-center gap-3 text-[#1DB954] font-black uppercase tracking-widest">
+          <RefreshCw className="animate-spin" /> Rejoining room…
+        </div>
+      </div>
+    );
+  }
+
   if (!gameState.roomId) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4 bg-[#121212] bg-[radial-gradient(circle_at_50%_0%,#1DB9541a_0%,transparent_50%)]">
@@ -1226,11 +1354,6 @@ function AppInner() {
               Spotify Linked
             </span>
           )}
-
-          {/* Debug chip (temporary for tonight) */}
-          <span className="text-[10px] px-2 py-1 rounded bg-white/5 border border-white/10 font-mono text-gray-300 hidden sm:inline">
-            phase:{String(gameState.phase)} rid:{String(roundId)} me:{String(currentPlayerId)}
-          </span>
         </div>
 
         <div className="flex items-center gap-3 sm:gap-4">
@@ -1361,7 +1484,7 @@ function AppInner() {
                       Reset Room Data
                     </Button>
                     <p className="text-xs text-gray-500 mt-2">
-                      (For tonight) Resets phase + wipes submissions/guesses if anything gets stuck.
+                      Resets phase + wipes submissions/guesses if anything gets stuck.
                     </p>
                   </div>
                 )}
@@ -1666,16 +1789,54 @@ function AppInner() {
               </div>
 
               {isHost ? (
-                <div className="text-center p-8 bg-[#181818] border border-[#282828] rounded-[2.5rem]">
-                  <p className="text-gray-400 font-bold uppercase tracking-widest">
-                    Host is running the round (no voting)
+                <div className="text-center p-8 bg-[#181818] border border-[#282828] rounded-[2.5rem] space-y-6">
+                  <p className="text-gray-300 font-bold uppercase tracking-widest">
+                    Players guessing progress
                   </p>
-                  <div className="pt-6">
+
+                  <div className="grid sm:grid-cols-2 gap-3 text-left">
+                    {guessProgress.byPlayer.map((p) => (
+                      <div
+                        key={p.playerId}
+                        className={`p-4 rounded-2xl border flex items-center gap-4 ${
+                          p.ready
+                            ? "border-[#1DB954]/40 bg-[#1DB954]/5"
+                            : "border-[#282828] bg-black/30"
+                        }`}
+                      >
+                        <img src={p.avatar} className="w-10 h-10 rounded-full" />
+                        <div className="flex-1">
+                          <div className="font-bold">{p.name}</div>
+                          <div className="text-xs text-gray-500 font-mono">
+                            {p.done}/{p.required} guessed
+                          </div>
+                        </div>
+                        {p.ready ? (
+                          <Check className="text-[#1DB954]" />
+                        ) : (
+                          <RefreshCw className="animate-spin text-gray-600" />
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="pt-4 flex flex-col items-center gap-3">
                     <Button
                       onClick={finalizeGuesses}
                       className="px-16 py-6 text-2xl font-black rounded-full uppercase italic tracking-tighter"
+                      disabled={!guessProgress.allReady}
                     >
                       Reveal Results
+                    </Button>
+
+                    {!guessProgress.allReady && (
+                      <div className="text-xs text-gray-500 font-bold uppercase tracking-widest">
+                        Waiting for everyone to finish…
+                      </div>
+                    )}
+
+                    <Button onClick={finalizeGuesses} variant="outline" className="px-10">
+                      Force Reveal
                     </Button>
                   </div>
                 </div>
@@ -1694,7 +1855,9 @@ function AppInner() {
                         <div
                           key={sub.song.id}
                           className={`bg-[#181818] border rounded-[2.5rem] overflow-hidden flex flex-col sm:flex-row shadow-2xl transition-all group ${
-                            currentGuess ? "border-[#1DB954]/40 bg-[#1DB954]/5" : "border-[#282828]"
+                            currentGuess
+                              ? "border-[#1DB954]/40 bg-[#1DB954]/5"
+                              : "border-[#282828]"
                           }`}
                         >
                           <div className="w-full sm:w-48 h-48 sm:h-auto bg-[#282828] flex-shrink-0 relative overflow-hidden">
@@ -1761,7 +1924,6 @@ function AppInner() {
             (() => {
               const currentSub = submissions[gameState.currentRevealIndex];
               if (!currentSub) return <div>Loading reveal...</div>;
-
               const owner = (gameState.players as Player[]).find((p) => p.id === currentSub.playerId);
               const key = submissionKey(currentSub.song.id, roundId);
 
@@ -1898,101 +2060,6 @@ function AppInner() {
                 </div>
               );
             })()}
-
-          {/* SCOREBOARD */}
-          {gameState.phase === GamePhase.SCOREBOARD && (
-            <div className="space-y-12 sm:space-y-20 py-6 sm:py-10">
-              <div className="text-center space-y-4">
-                <h2 className="text-6xl sm:text-8xl md:text-[9rem] font-black tracking-tighter uppercase italic drop-shadow-lg leading-none">
-                  The Ranks
-                </h2>
-                <p className="text-gray-500 text-xl sm:text-3xl font-black uppercase tracking-[0.4em]">
-                  Who has the vision?
-                </p>
-              </div>
-
-              <Card className="max-w-4xl mx-auto p-0 overflow-hidden rounded-[3rem] sm:rounded-[5rem] border-[#282828] bg-black/70 backdrop-blur-3xl shadow-2xl">
-                <div className="divide-y divide-white/5">
-                  {[...(gameState.players as Player[])]
-                    .filter((p) => !p.isHost)
-                    .sort((a, b) => b.score - a.score)
-                    .map((player, idx) => (
-                      <div
-                        key={player.id}
-                        className={`px-8 sm:px-20 py-8 sm:py-12 flex items-center justify-between transition-all hover:bg-white/10 ${
-                          idx === 0 ? "bg-gradient-to-r from-[#1DB954]/20 via-transparent to-transparent" : ""
-                        }`}
-                      >
-                        <div className="flex items-center gap-6 sm:gap-12">
-                          <div
-                            className={`w-12 h-12 sm:w-20 sm:h-20 rounded-full flex items-center justify-center font-black text-xl sm:text-4xl ${
-                              idx === 0 ? "bg-[#1DB954] text-black shadow-xl" : "bg-[#282828] text-gray-500"
-                            }`}
-                          >
-                            {idx + 1}
-                          </div>
-                          <img
-                            src={player.avatar}
-                            className="w-12 h-12 sm:w-24 sm:h-24 rounded-full border-4 sm:border-[8px] border-transparent"
-                          />
-                          <span className="font-black text-2xl sm:text-5xl tracking-tighter uppercase italic">
-                            {player.name}
-                          </span>
-                        </div>
-                        <div className="text-4xl sm:text-7xl md:text-[8rem] font-black text-[#1DB954] tracking-tighter drop-shadow-lg">
-                          {player.score}
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              </Card>
-
-              {isHost && (
-                <div className="flex justify-center pt-8 sm:pt-16">
-                  <Button
-                    onClick={nextQuestion}
-                    className="w-full md:w-[40rem] py-6 sm:py-8 text-2xl sm:text-4xl font-black rounded-full bg-white text-black shadow-2xl uppercase italic tracking-tighter"
-                  >
-                    {gameState.currentQuestionIndex < 9 ? "Next Round" : "Finale"}
-                  </Button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* FINAL */}
-          {gameState.phase === GamePhase.FINAL && (
-            <div className="text-center space-y-16 sm:space-y-24 py-16 sm:py-24 animate-in fade-in zoom-in duration-1000">
-              <div className="space-y-8">
-                <div className="flex justify-center mb-10 sm:mb-16">
-                  <Trophy size={180} className="text-[#1DB954] animate-bounce sm:size-[240px]" />
-                </div>
-                <h2 className="text-8xl sm:text-[12rem] md:text-[18rem] font-black tracking-tighter leading-none uppercase italic text-[#1DB954] drop-shadow-2xl">
-                  KING
-                </h2>
-                <p className="text-2xl sm:text-5xl text-gray-600 font-black uppercase tracking-[0.5em] italic px-4">
-                  Master Curator
-                </p>
-              </div>
-
-              <div className="flex flex-col sm:flex-row gap-8 sm:gap-12 justify-center pt-12 sm:pt-24 px-4">
-                <Button
-                  onClick={() => window.location.reload()}
-                  variant="primary"
-                  className="px-16 sm:px-32 py-8 text-3xl sm:text-5xl font-black uppercase italic"
-                >
-                  New Session
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => window.location.reload()}
-                  className="px-12 text-2xl uppercase tracking-widest font-black"
-                >
-                  Quit Game
-                </Button>
-              </div>
-            </div>
-          )}
         </div>
       </main>
     </div>
