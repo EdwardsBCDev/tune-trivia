@@ -532,7 +532,21 @@ function AppInner() {
       const data = snapshot.val();
       if (!data) return;
 
-      const safePlayers = Array.isArray(data.players) ? data.players : [];
+      // ✅ FIX: sanitise players so score is always a number (prevents broken scoreboard)
+      const safePlayers: Player[] = Array.isArray(data.players)
+        ? data.players.map((p: any) => {
+            const id = String(p?.id ?? "");
+            const name = String(p?.name ?? "Player");
+            const avatar = String(
+              p?.avatar ?? `https://picsum.photos/seed/${encodeURIComponent(id || "p")}/100/100`
+            );
+            const isHost = !!p?.isHost;
+            const scoreNum = Number(p?.score);
+            const score = Number.isFinite(scoreNum) ? scoreNum : 0;
+
+            return { id, name, avatar, isHost, score } as Player;
+          })
+        : [];
 
       const safeSubmissions: Submission[] = Array.isArray(data.submissions)
         ? data.submissions
@@ -904,6 +918,7 @@ function AppInner() {
   const mysterySubmissions = submissions.filter((s) => s.playerId !== currentPlayerId);
   const myGuesses = guesses.filter((g) => g.voterId === currentPlayerId);
 
+  // ✅ FIX: use submissionKey() consistently (prevents false “complete” states)
   const allGuessesCompleted =
     mysterySubmissions.length > 0 &&
     mysterySubmissions.every((s) =>
@@ -1245,15 +1260,20 @@ function AppInner() {
     const ownerByKey = new Map<string, string>();
     submissions.forEach((s) => ownerByKey.set(submissionKey(s.song.id, roundId), s.playerId));
 
+    // ✅ FIX: NaN-proof scoring (prevents “scores broke after round 1”)
     const updatedPlayers: Player[] = (gameState.players as Player[]).map((p) => {
-      if (p.isHost) return p;
+      const baseScoreNum = Number((p as any).score);
+      const baseScore = Number.isFinite(baseScoreNum) ? baseScoreNum : 0;
+
+      if (p.isHost) return { ...p, score: baseScore };
+
       const my = guesses.filter((g) => g.voterId === p.id);
       let correct = 0;
       for (const g of my) {
         const actualOwner = ownerByKey.get(g.submissionId);
         if (actualOwner && actualOwner === g.targetPlayerId) correct += 1;
       }
-      return { ...p, score: p.score + correct * 10 };
+      return { ...p, score: baseScore + correct * 10 };
     });
 
     await update(roomRef, { players: updatedPlayers, phase: GamePhase.SCOREBOARD });
@@ -1600,8 +1620,10 @@ function AppInner() {
                 <p className="text-[#1DB954] font-black tracking-[0.6em] text-xs sm:text-sm uppercase">
                   Round {gameState.currentQuestionIndex + 1}
                 </p>
+
+                {/* ✅ FIX: proper indexing */}
                 <h2 className="text-4xl sm:text-6xl md:text-8xl font-black leading-tight tracking-tighter italic text-white px-4">
-                  "{(gameState.questions || []).[gameState.currentQuestionIndex] ?? "Pick a song that fits the vibe…"}"
+                  "{(gameState.questions || [])[gameState.currentQuestionIndex] ?? "Pick a song that fits the vibe…"}"
                 </h2>
               </div>
 
@@ -1624,8 +1646,10 @@ function AppInner() {
                 <p className="text-[#1DB954] font-black text-[10px] uppercase tracking-[0.5em] mb-2 sm:mb-4">
                   Current Prompt
                 </p>
+
+                {/* ✅ FIX: proper indexing */}
                 <h3 className="text-2xl sm:text-4xl md:text-5xl font-black tracking-tighter leading-tight italic px-4">
-                  "{(gameState.questions || []).[gameState.currentQuestionIndex] ?? "Pick a song that fits the vibe…"}"
+                  "{(gameState.questions || [])[gameState.currentQuestionIndex] ?? "Pick a song that fits the vibe…"}"
                 </h3>
               </div>
 
@@ -2128,7 +2152,7 @@ function AppInner() {
                 <div className="divide-y divide-white/5">
                   {(gameState.players as Player[])
                     .slice()
-                    .sort((a, b) => b.score - a.score)
+                    .sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0))
                     .map((player, idx) => (
                       <div
                         key={player.id}
@@ -2150,7 +2174,7 @@ function AppInner() {
                           </span>
                         </div>
                         <div className="text-4xl sm:text-7xl md:text-[8rem] font-black text-[#1DB954] tracking-tighter drop-shadow-lg">
-                          {player.score}
+                          {Number(player.score) || 0}
                         </div>
                       </div>
                     ))}
@@ -2184,15 +2208,15 @@ function AppInner() {
 
               <div className="flex flex-col items-center space-y-12 bg-[#181818]/90 backdrop-blur-xl p-10 sm:p-20 rounded-[5rem] border-2 border-white/5 max-w-4xl mx-auto shadow-2xl">
                 <img
-                  src={(gameState.players as Player[]).slice().sort((a, b) => b.score - a.score)[0]?.avatar}
+                  src={(gameState.players as Player[]).slice().sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0))[0]?.avatar}
                   className="w-48 h-48 sm:w-72 sm:h-72 rounded-full border-[12px] sm:border-[20px] border-[#1DB954] shadow-2xl"
                 />
                 <div className="space-y-4">
                   <h3 className="text-6xl sm:text-9xl font-black tracking-tighter italic uppercase px-4">
-                    {(gameState.players as Player[]).slice().sort((a, b) => b.score - a.score)[0]?.name}
+                    {(gameState.players as Player[]).slice().sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0))[0]?.name}
                   </h3>
                   <div className="text-3xl sm:text-6xl font-black text-[#1DB954] uppercase tracking-[0.4em]">
-                    {(gameState.players as Player[]).slice().sort((a, b) => b.score - a.score)[0]?.score} PTS
+                    {(Number((gameState.players as Player[]).slice().sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0))[0]?.score) || 0)} PTS
                   </div>
                 </div>
               </div>
