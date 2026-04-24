@@ -34,7 +34,8 @@ export enum GamePhase {
   VOTING = 'VOTING',
   REVEAL = 'REVEAL',
   SCOREBOARD = 'SCOREBOARD',
-  FINAL = 'FINAL'
+  FINAL = 'FINAL',
+  ENDED = 'ENDED'
 }
 
 export interface GameState {

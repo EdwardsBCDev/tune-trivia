@@ -42,133 +42,173 @@ import {
 // ✅ Built-in questions (100)
 // ------------------------------------------------------------
 const BUILT_IN_QUESTIONS: string[] = [
-  // Christmas / party vibe
-  "Your entrance song for the Christmas party would be…",
-  "A song that screams ‘Christmas chaos’ is…",
-  "The song you’d play while wrapping presents at 2am is…",
-  "A song for when the turkey is still frozen is…",
-  "The ultimate ‘let’s get the party started’ track is…",
-  "A song for when someone suggests a drinking game is…",
-  "A song that feels like opening the first present is…",
-  "A song that feels like the last mince pie is…",
-  "A song for the ‘one more round’ moment is…",
-  "A song for when the playlist goes rogue is…",
-  "A song that feels like Christmas lights turning on is…",
-  "A song for the awkward family photo is…",
-  "A song you’d play while setting up decorations is…",
-  "A song for the kitchen dance-off is…",
-  "A song that makes you feel festive instantly is…",
+  // Party starters
+  "Your entrance song for tonight would be...",
+  "The ultimate 'let's get the party started' track is...",
+  "A song for when someone suggests a game is...",
+  "A song for the 'one more round' moment is...",
+  "A song for when the playlist goes rogue is...",
+  "A song for the awkward group photo is...",
+  "A song for the kitchen dance-off is...",
+  "A song that makes you feel instantly ready for a night out is...",
+  "A song for walking into a room like you own it is...",
+  "A song for your most dramatic slow-motion moment is...",
+  "A song for when the night suddenly gets legendary is...",
+  "A song for when the quiet person finally takes over the playlist is...",
+  "A song for when everyone knows the chorus is...",
+  "A song for the first drink of the evening is...",
+  "A song for the last song before everyone goes home is...",
 
   // Personality / vibes
-  "A song that describes you when you’re tired is…",
-  "A song that describes you when you’re confident is…",
-  "A song that describes your laugh is…",
-  "A song that describes your style is…",
-  "A song that describes your group chat energy is…",
-  "A song that describes your morning mood is…",
-  "A song that describes your ‘main character’ moment is…",
-  "A song that describes your villain era is…",
-  "A song that describes your chaotic side is…",
-  "A song that describes your calm side is…",
-  "A song that describes your ‘I’m fine’ mood is…",
-  "A song that describes your secret talent is…",
-  "A song that describes your love life is…",
-  "A song that describes your humour is…",
-  "A song that describes your confidence when you’re tipsy is…",
+  "A song that describes you when you're tired is...",
+  "A song that describes you when you're confident is...",
+  "A song that describes your laugh is...",
+  "A song that describes your style is...",
+  "A song that describes your group chat energy is...",
+  "A song that describes your morning mood is...",
+  "A song that describes your main character moment is...",
+  "A song that describes your villain era is...",
+  "A song that describes your chaotic side is...",
+  "A song that describes your calm side is...",
+  "A song that describes your 'I'm fine' mood is...",
+  "A song that describes your secret talent is...",
+  "A song that describes your love life is...",
+  "A song that describes your humour is...",
+  "A song that describes your confidence when you're tipsy is...",
+  "A song that describes your energy in one chorus is...",
+  "A song that sums up your online personality is...",
+  "A song that describes you when you're pretending to be organised is...",
+  "A song that captures your dramatic side is...",
+  "A song that makes you feel ten years younger is...",
 
   // Situations
-  "A song for walking into a room like you own it is…",
-  "A song for your most dramatic slow-motion moment is…",
-  "A song for when you’re running late is…",
-  "A song for when you need motivation is…",
-  "A song for when you want everyone to leave you alone is…",
-  "A song for when you’re cleaning the house is…",
-  "A song for when you’re cooking something ‘experimental’ is…",
-  "A song for the drive home after a big night is…",
-  "A song for when you’re stuck in traffic is…",
-  "A song for when you’ve had too much caffeine is…",
-  "A song for when you’ve had not enough sleep is…",
-  "A song for when you’re feeling unstoppable is…",
-  "A song for when your phone battery hits 1% is…",
-  "A song for when you’re ‘just popping in’ but stay hours is…",
-  "A song for a last-minute plan that turns legendary is…",
+  "A song for when you're running late is...",
+  "A song for when you need motivation is...",
+  "A song for when you want everyone to leave you alone is...",
+  "A song for when you're cleaning the house is...",
+  "A song for when you're cooking something experimental is...",
+  "A song for the drive home after a big night is...",
+  "A song for when you're stuck in traffic is...",
+  "A song for when you've had too much caffeine is...",
+  "A song for when you've had not enough sleep is...",
+  "A song for when you're feeling unstoppable is...",
+  "A song for when your phone battery hits 1% is...",
+  "A song for when you're 'just popping in' but stay hours is...",
+  "A song for a last-minute plan that turns legendary is...",
+  "A song for when you've accidentally become the responsible one is...",
+  "A song for when a plan goes wrong but somehow gets better is...",
+  "A song for walking home in the rain like you're in a film is...",
+  "A song for opening an email you know is bad news is...",
+  "A song for pretending you understood the instructions is...",
+  "A song for when the taxi finally arrives is...",
+  "A song for when the group chat starts making dangerous plans is...",
 
   // Friends / social
-  "A song that reminds you of your best mate is…",
-  "A song your friends would say is ‘so you’ is…",
-  "A song you’d dedicate to the person hosting tonight is…",
-  "A song that sums up this group is…",
-  "A song that belongs on every road trip with friends is…",
-  "A song for a group singalong that gets too loud is…",
-  "A song for when someone starts telling a story ‘from 2017’ is…",
-  "A song for when everyone is laughing but no one knows why is…",
-  "A song for when you meet someone and instantly become friends is…",
-  "A song for that one friend who’s always late is…",
-  "A song for that one friend who knows all the lyrics is…",
-  "A song for that one friend who starts dancing first is…",
-  "A song for the friend who always brings snacks is…",
-  "A song for the friend who becomes the DJ is…",
-  "A song for the friend who disappears and reappears with a drink is…",
+  "A song that reminds you of your best mate is...",
+  "A song your friends would say is 'so you' is...",
+  "A song you'd dedicate to the person hosting tonight is...",
+  "A song that sums up this group is...",
+  "A song that belongs on every road trip with friends is...",
+  "A song for a group singalong that gets too loud is...",
+  "A song for when someone starts telling a story from years ago is...",
+  "A song for when everyone is laughing but no one knows why is...",
+  "A song for when you meet someone and instantly become friends is...",
+  "A song for that one friend who's always late is...",
+  "A song for that one friend who knows all the lyrics is...",
+  "A song for that one friend who starts dancing first is...",
+  "A song for the friend who always brings snacks is...",
+  "A song for the friend who becomes the DJ is...",
+  "A song for the friend who disappears and reappears with a drink is...",
+  "A song for the friend who always has a story is...",
+  "A song for the friend who makes every plan more chaotic is...",
+  "A song for the person most likely to request one more tune is...",
+  "A song that should be this group's official anthem is...",
+  "A song for when the whole table starts talking at once is...",
 
   // Throwbacks / guilty pleasures
-  "Your ultimate guilty pleasure song is…",
-  "A song you know every word to but pretend you don’t is…",
-  "A throwback that instantly time-travels you is…",
-  "A song you loved in school that still hits is…",
-  "A song that was your teenage anthem is…",
-  "A song that belongs in a cheesy montage is…",
-  "A song that belongs in a 2000s club is…",
-  "A song that screams ‘karaoke disaster’ is…",
-  "A song that would ruin your Spotify Wrapped if exposed is…",
-  "A song that’s embarrassing but iconic is…",
+  "Your ultimate guilty pleasure song is...",
+  "A song you know every word to but pretend you don't is...",
+  "A throwback that instantly time-travels you is...",
+  "A song you loved in school that still hits is...",
+  "A song that was your teenage anthem is...",
+  "A song that belongs in a cheesy montage is...",
+  "A song that belongs in a 2000s club is...",
+  "A song that screams karaoke disaster is...",
+  "A song that would ruin your Spotify Wrapped if exposed is...",
+  "A song that's embarrassing but iconic is...",
+  "A song you forgot existed but still secretly love is...",
+  "A song that reminds you of an old phone ringtone era is...",
+  "A song that belongs on a school disco playlist is...",
+  "A song you'd defend even though everyone else hates it is...",
+  "A song that instantly makes you think of a specific year is...",
 
   // Hypotheticals
-  "If you were a superhero, your theme song would be…",
-  "If you were a spy, your theme song would be…",
-  "If your life was a rom-com, the soundtrack would include…",
-  "If your life was an action film, the soundtrack would include…",
-  "If your life was a reality show, the theme song would be…",
-  "If you opened a nightclub, the opening track would be…",
-  "If you were on a cooking show, your entrance song would be…",
-  "If you won an award, you’d walk on stage to…",
-  "If you got caught in a heist, the background music would be…",
-  "If you were crowned royalty, your coronation song would be…",
+  "If you were a superhero, your theme song would be...",
+  "If you were a spy, your theme song would be...",
+  "If your life was a rom-com, the soundtrack would include...",
+  "If your life was an action film, the soundtrack would include...",
+  "If your life was a reality show, the theme song would be...",
+  "If you opened a nightclub, the opening track would be...",
+  "If you were on a cooking show, your entrance song would be...",
+  "If you won an award, you'd walk on stage to...",
+  "If you got caught in a heist, the background music would be...",
+  "If you were crowned royalty, your coronation song would be...",
+  "If you had a walk-on song at work, it would be...",
+  "If you were a contestant on a talent show, your audition song would be...",
+  "If you had to introduce yourself with one song, it would be...",
+  "If your pet could choose your theme tune, it would be...",
+  "If you had a dramatic trailer for your life, the song would be...",
 
   // Mood / emotions
-  "A song for when you need a confidence boost is…",
-  "A song for when you’re feeling nostalgic is…",
-  "A song for when you’re feeling grateful is…",
-  "A song for when you’re feeling fearless is…",
-  "A song for when you’re feeling heartbroken is…",
-  "A song for when you’re feeling lucky is…",
-  "A song for when you’re feeling dramatic is…",
-  "A song for when you’re feeling peaceful is…",
-  "A song for when you’re feeling wild is…",
-  "A song for when you’re feeling mischievous is…",
+  "A song for when you need a confidence boost is...",
+  "A song for when you're feeling nostalgic is...",
+  "A song for when you're feeling grateful is...",
+  "A song for when you're feeling fearless is...",
+  "A song for when you're feeling heartbroken is...",
+  "A song for when you're feeling lucky is...",
+  "A song for when you're feeling dramatic is...",
+  "A song for when you're feeling peaceful is...",
+  "A song for when you're feeling wild is...",
+  "A song for when you're feeling mischievous is...",
+  "A song for when you need to reset your mood is...",
+  "A song that feels like a deep breath is...",
+  "A song that feels like winning a tiny victory is...",
+  "A song that makes you feel oddly emotional is...",
+  "A song that makes you feel ready to take on the world is...",
 
   // Food / drink / chaos
-  "A song that matches your favourite drink is…",
-  "A song for when someone spills something immediately is…",
-  "A song for when the snacks run out is…",
-  "A song for when someone says ‘we should order takeaway’ is…",
-  "A song for a toast that goes on too long is…",
-  "A song for the moment the dessert arrives is…",
-  "A song for when someone starts mixing random drinks is…",
-  "A song for when the kettle is the real MVP is…",
-  "A song for when someone brings out party hats is…",
-  "A song for when everyone starts clapping for no reason is…",
+  "A song that matches your favourite drink is...",
+  "A song for when someone spills something immediately is...",
+  "A song for when the snacks run out is...",
+  "A song for when someone says 'we should order takeaway' is...",
+  "A song for a toast that goes on too long is...",
+  "A song for the moment the dessert arrives is...",
+  "A song for when someone starts mixing random drinks is...",
+  "A song for when the kettle is the real MVP is...",
+  "A song for when someone brings out party hats is...",
+  "A song for when everyone starts clapping for no reason is...",
+  "A song for when the takeaway arrives earlier than expected is...",
+  "A song for opening the fridge and finding exactly what you wanted is...",
+  "A song for burning dinner but pretending it's fine is...",
+  "A song for the snack table at midnight is...",
+  "A song for the first sip after a long day is...",
 
   // UK / relatable
-  "A song for queuing politely but fuming inside is…",
-  "A song for when someone says ‘shall we do a quick one?’ is…",
-  "A song for when you’re holding your breath at the self-checkout is…",
-  "A song for the ‘train delayed again’ moment is…",
-  "A song for when you put the heating on and feel rich is…",
-  "A song for when you finally find matching socks is…",
-  "A song for when you say ‘I’m on my way’ but you’re still in bed is…",
-  "A song for when you’re trying to be quiet but everything is loud is…",
-  "A song for when the Wi-Fi dies at the worst time is…",
-  "A song for when you accidentally send a message to the wrong chat is…",
+  "A song for queuing politely but fuming inside is...",
+  "A song for when someone says 'shall we do a quick one?' is...",
+  "A song for when you're holding your breath at the self-checkout is...",
+  "A song for the 'train delayed again' moment is...",
+  "A song for when you put the heating on and feel rich is...",
+  "A song for when you finally find matching socks is...",
+  "A song for when you say 'I'm on my way' but you're still in bed is...",
+  "A song for when you're trying to be quiet but everything is loud is...",
+  "A song for when the Wi-Fi dies at the worst time is...",
+  "A song for when you accidentally send a message to the wrong chat is...",
+  "A song for finding a parking space immediately is...",
+  "A song for pretending the weather is fine when it is not is...",
+  "A song for seeing the price of a train ticket is...",
+  "A song for when someone says 'just one more episode' is...",
+  "A song for the moment your delivery finally arrives is...",
 ];
 
 // ------------------------------------------------------------
@@ -186,6 +226,18 @@ const firebaseConfig = {
 
 const app = firebaseConfig.apiKey ? initializeApp(firebaseConfig) : null;
 const db = app ? getDatabase(app) : null;
+
+const describeFirebaseError = (action: string, error: any) => {
+  const rawMessage = String(error?.message || error || "Unknown Firebase error");
+  const code = String(error?.code || "");
+  const denied = code.includes("PERMISSION_DENIED") || rawMessage.includes("PERMISSION_DENIED");
+
+  if (denied) {
+    return `${action} failed: Firebase denied Realtime Database access. Check that the published database rules allow read/write under /rooms.`;
+  }
+
+  return `${action} failed: ${rawMessage}`;
+};
 
 // ---------------------------
 // Error Boundary (prevents blank screen)
@@ -336,6 +388,7 @@ function AppInner() {
 
   // --- Rejoin flow state ---
   const [isRejoining, setIsRejoining] = useState(false);
+  const [firebaseError, setFirebaseError] = useState<string | null>(null);
 
   // --- Game State ---
   const [gameState, setGameState] = useState<
@@ -444,6 +497,42 @@ function AppInner() {
 
   const submissionKey = (songId: string, rid: number) => `${rid}:${songId}`;
 
+  const reportFirebaseError = (action: string, error: any, shouldAlert = true) => {
+    const message = describeFirebaseError(action, error);
+    console.error(message, error);
+    setFirebaseError(message);
+    if (shouldAlert) alert(message);
+  };
+
+  const clearLocalSessionCache = () => {
+    sessionStorage.removeItem("tune_room_id");
+    sessionStorage.removeItem("tune_player_id");
+    localStorage.removeItem("tune_room_id");
+    localStorage.removeItem("tune_player_id");
+  };
+
+  const returnToStart = () => {
+    clearLocalSessionCache();
+    setCurrentPlayerId(null);
+    setHostToken(null);
+    setSearchQuery("");
+    setSearchResults([]);
+    setSearchError(null);
+    setListeningIndex(0);
+    setFirebaseError(null);
+    setGameState({
+      roomId: "",
+      phase: GamePhase.LOBBY,
+      currentQuestionIndex: 0,
+      questions: pickRandomQuestions(10),
+      players: [],
+      submissions: [],
+      guesses: [],
+      currentRevealIndex: 0,
+      roundId: 0,
+    });
+  };
+
   // --- Firebase room ref ---
   const roomRef = useMemo(() => {
     if (!db || !gameState.roomId) return null;
@@ -511,7 +600,8 @@ function AppInner() {
           setGameState((prev: any) => ({ ...prev, ...room }));
           setIsRejoining(false);
           return;
-        } catch {
+        } catch (error) {
+          if (i === attempts - 1) reportFirebaseError("Rejoin room", error, false);
           await new Promise((r) => setTimeout(r, 400));
         }
       }
@@ -531,6 +621,13 @@ function AppInner() {
     const unsub = onValue(rRef, (snapshot) => {
       const data = snapshot.val();
       if (!data) return;
+
+      if (data.phase === GamePhase.ENDED) {
+        returnToStart();
+        return;
+      }
+
+      setFirebaseError(null);
 
       // ✅ FIX: sanitise players so score is always a number (prevents broken scoreboard)
       const safePlayers: Player[] = Array.isArray(data.players)
@@ -593,6 +690,8 @@ function AppInner() {
       }));
 
       if (data.hostToken) setHostToken(String(data.hostToken));
+    }, (error) => {
+      reportFirebaseError("Sync room", error, false);
     });
 
     return () => unsub();
@@ -979,86 +1078,103 @@ function AppInner() {
 
   const createRoom = async () => {
     if (!db) {
-      alert("Firebase not connected! Please check your environment variables.");
+      const message = "Firebase not connected. Check the VITE_FIREBASE_* environment variables.";
+      setFirebaseError(message);
+      alert(message);
       return;
     }
 
-    const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
-    const hostId = "p1_host_" + Date.now();
+    try {
+      const newRoomId = Math.random().toString(36).substring(2, 6).toUpperCase();
+      const hostId = "p1_host_" + Date.now();
 
-    const host: Player = {
-      id: hostId,
-      name: "Host",
-      score: 0,
-      isHost: true,
-      avatar: "https://picsum.photos/seed/host/100/100",
-    };
+      const host: Player = {
+        id: hostId,
+        name: "Host",
+        score: 0,
+        isHost: true,
+        avatar: "https://picsum.photos/seed/host/100/100",
+      };
 
-    const initialGame: GameState & { roundId: number; hostToken?: string } = {
-      roomId: newRoomId,
-      phase: GamePhase.LOBBY,
-      currentQuestionIndex: 0,
-      questions: pickRandomQuestions(10),
-      players: [host],
-      submissions: [],
-      guesses: [],
-      currentRevealIndex: 0,
-      roundId: 0,
-      hostToken: spotifyToken || "",
-    };
+      const initialGame: GameState & { roundId: number; hostToken?: string } = {
+        roomId: newRoomId,
+        phase: GamePhase.LOBBY,
+        currentQuestionIndex: 0,
+        questions: pickRandomQuestions(10),
+        players: [host],
+        submissions: [],
+        guesses: [],
+        currentRevealIndex: 0,
+        roundId: 0,
+        hostToken: spotifyToken || "",
+      };
 
-    await set(ref(db, `rooms/${newRoomId}`), initialGame);
+      await set(ref(db, `rooms/${newRoomId}`), initialGame);
 
-    setCurrentPlayerId(hostId);
-    sessionStorage.setItem("tune_player_id", hostId);
-    localStorage.setItem("tune_player_id", hostId);
+      setFirebaseError(null);
+      setCurrentPlayerId(hostId);
+      sessionStorage.setItem("tune_player_id", hostId);
+      localStorage.setItem("tune_player_id", hostId);
 
-    sessionStorage.setItem("tune_room_id", newRoomId);
-    localStorage.setItem("tune_room_id", newRoomId);
+      sessionStorage.setItem("tune_room_id", newRoomId);
+      localStorage.setItem("tune_room_id", newRoomId);
 
-    setGameState(initialGame);
+      setGameState(initialGame);
+    } catch (error) {
+      reportFirebaseError("Create room", error);
+    }
   };
 
   const joinRoom = async () => {
-    if (!db) return;
+    if (!db) {
+      const message = "Firebase not connected. Check the VITE_FIREBASE_* environment variables.";
+      setFirebaseError(message);
+      alert(message);
+      return;
+    }
     if (!roomCodeInput) return alert("Please enter a room code");
     if (!playerName) return alert("Please enter your name");
 
-    const code = roomCodeInput.toUpperCase().trim();
-    const rRef = ref(db, `rooms/${code}`);
-    const snapshot = await get(rRef);
+    try {
+      const code = roomCodeInput.toUpperCase().trim();
+      const rRef = ref(db, `rooms/${code}`);
+      const snapshot = await get(rRef);
 
-    if (!snapshot.exists()) return alert("Room not found!");
+      if (!snapshot.exists()) return alert("Room not found!");
 
-    const game = snapshot.val();
-    const newPlayerId =
-      currentPlayerId || localStorage.getItem("tune_player_id") || `p_${Date.now()}`;
+      const game = snapshot.val();
+      const newPlayerId =
+        currentPlayerId || localStorage.getItem("tune_player_id") || `p_${Date.now()}`;
 
-    const newPlayer: Player = {
-      id: newPlayerId,
-      name: playerName,
-      score: 0,
-      isHost: false,
-      avatar: `https://picsum.photos/seed/${newPlayerId}/100/100`,
-    };
+      const newPlayer: Player = {
+        id: newPlayerId,
+        name: playerName,
+        score: 0,
+        isHost: false,
+        avatar: `https://picsum.photos/seed/${newPlayerId}/100/100`,
+      };
 
-    await runTransaction(rRef, (room: any) => {
-      if (!room) return room;
-      room.players = Array.isArray(room.players) ? room.players : [];
-      if (!room.players.some((p: any) => p.id === newPlayerId)) room.players.push(newPlayer);
-      return room;
-    });
+      await runTransaction(rRef, (room: any) => {
+        if (!room) return room;
+        room.players = Array.isArray(room.players) ? room.players : [];
+        if (!room.players.some((p: any) => p.id === newPlayerId)) room.players.push(newPlayer);
+        return room;
+      });
 
-    sessionStorage.setItem("tune_player_id", newPlayerId);
-    sessionStorage.setItem("tune_player_name", playerName);
-    localStorage.setItem("tune_player_id", newPlayerId);
-    localStorage.setItem("tune_player_name", playerName);
+      setFirebaseError(null);
+      sessionStorage.setItem("tune_player_id", newPlayerId);
+      sessionStorage.setItem("tune_player_name", playerName);
+      localStorage.setItem("tune_player_id", newPlayerId);
+      localStorage.setItem("tune_player_name", playerName);
 
-    sessionStorage.setItem("tune_room_id", code);
-    localStorage.setItem("tune_room_id", code);
+      sessionStorage.setItem("tune_room_id", code);
+      localStorage.setItem("tune_room_id", code);
 
-    setCurrentPlayerId(newPlayerId);
-    setGameState(game);
+      setCurrentPlayerId(newPlayerId);
+      setGameState(game);
+    } catch (error) {
+      reportFirebaseError("Join room", error);
+    }
   };
 
   // ✅ START GAME now always uses random built-in questions
@@ -1072,17 +1188,22 @@ function AppInner() {
 
     const questions = pickRandomQuestions(10);
 
-    await update(roomRef, {
-      questions,
-      currentQuestionIndex: 0,
-      roundId: 0,
-      phase: GamePhase.PROMPT,
-      submissions: [],
-      guesses: [],
-      currentRevealIndex: 0,
-    });
+    try {
+      await update(roomRef, {
+        questions,
+        currentQuestionIndex: 0,
+        roundId: 0,
+        phase: GamePhase.PROMPT,
+        submissions: [],
+        guesses: [],
+        currentRevealIndex: 0,
+      });
 
-    setListeningIndex(0);
+      setFirebaseError(null);
+      setListeningIndex(0);
+    } catch (error) {
+      reportFirebaseError("Start game", error);
+    }
   };
 
   const openSubmissions = async () => {
@@ -1093,13 +1214,18 @@ function AppInner() {
     setSearchError(null);
     setListeningIndex(0);
 
-    await update(roomRef, {
-      phase: GamePhase.SUBMITTING,
-      submissions: [],
-      guesses: [],
-      currentRevealIndex: 0,
-      roundId,
-    });
+    try {
+      await update(roomRef, {
+        phase: GamePhase.SUBMITTING,
+        submissions: [],
+        guesses: [],
+        currentRevealIndex: 0,
+        roundId,
+      });
+      setFirebaseError(null);
+    } catch (error) {
+      reportFirebaseError("Open submissions", error);
+    }
   };
 
   const submitSong = async (song: Song) => {
@@ -1110,29 +1236,34 @@ function AppInner() {
     setSearchResults([]);
     setSearchError(null);
 
-    await runTransaction(roomRef, (room: any) => {
-      if (!room) return room;
+    try {
+      await runTransaction(roomRef, (room: any) => {
+        if (!room) return room;
 
-      const rid = typeof room.roundId === "number" ? room.roundId : 0;
+        const rid = typeof room.roundId === "number" ? room.roundId : 0;
 
-      room.players = Array.isArray(room.players) ? room.players : [];
-      room.submissions = Array.isArray(room.submissions) ? room.submissions : [];
+        room.players = Array.isArray(room.players) ? room.players : [];
+        room.submissions = Array.isArray(room.submissions) ? room.submissions : [];
 
-      const playingPlayers = room.players.filter((p: any) => !p.isHost);
-      const subsThisRound = room.submissions.filter((s: any) => (s.roundId ?? 0) === rid);
+        const playingPlayers = room.players.filter((p: any) => !p.isHost);
+        const subsThisRound = room.submissions.filter((s: any) => (s.roundId ?? 0) === rid);
 
-      if (subsThisRound.some((s: any) => s.playerId === currentPlayerId)) return room;
+        if (subsThisRound.some((s: any) => s.playerId === currentPlayerId)) return room;
 
-      room.submissions.push({ playerId: currentPlayerId, song, roundId: rid });
+        room.submissions.push({ playerId: currentPlayerId, song, roundId: rid });
 
-      const newCount = room.submissions.filter((s: any) => (s.roundId ?? 0) === rid).length;
-      if (newCount >= playingPlayers.length) {
-        room.phase = GamePhase.LISTENING;
-        room.currentRevealIndex = 0;
-      }
+        const newCount = room.submissions.filter((s: any) => (s.roundId ?? 0) === rid).length;
+        if (newCount >= playingPlayers.length) {
+          room.phase = GamePhase.LISTENING;
+          room.currentRevealIndex = 0;
+        }
 
-      return room;
-    });
+        return room;
+      });
+      setFirebaseError(null);
+    } catch (error) {
+      reportFirebaseError("Submit song", error);
+    }
   };
 
   // Search songs: Spotify first (host/own token), then AI fallback, then MOCK fallback
@@ -1195,14 +1326,24 @@ function AppInner() {
 
   const forceStartListening = async () => {
     if (!isHost || !roomRef) return;
-    await update(roomRef, { phase: GamePhase.LISTENING, currentRevealIndex: 0 });
-    setListeningIndex(0);
+    try {
+      await update(roomRef, { phase: GamePhase.LISTENING, currentRevealIndex: 0 });
+      setFirebaseError(null);
+      setListeningIndex(0);
+    } catch (error) {
+      reportFirebaseError("Force start listening", error);
+    }
   };
 
   const startVoting = async () => {
     if (!isHost || !roomRef) return;
     await pausePlayback();
-    await update(roomRef, { phase: GamePhase.VOTING });
+    try {
+      await update(roomRef, { phase: GamePhase.VOTING });
+      setFirebaseError(null);
+    } catch (error) {
+      reportFirebaseError("Start voting", error);
+    }
   };
 
   const submitGuess = async (songId: string, targetPlayerId: string) => {
@@ -1211,32 +1352,42 @@ function AppInner() {
 
     const key = submissionKey(songId, roundId);
 
-    await runTransaction(roomRef, (room: any) => {
-      if (!room) return room;
+    try {
+      await runTransaction(roomRef, (room: any) => {
+        if (!room) return room;
 
-      const rid = typeof room.roundId === "number" ? room.roundId : 0;
-      room.guesses = Array.isArray(room.guesses) ? room.guesses : [];
+        const rid = typeof room.roundId === "number" ? room.roundId : 0;
+        room.guesses = Array.isArray(room.guesses) ? room.guesses : [];
 
-      room.guesses = room.guesses.filter(
-        (g: any) =>
-          !((g.roundId ?? 0) === rid && g.voterId === currentPlayerId && g.submissionId === key)
-      );
+        room.guesses = room.guesses.filter(
+          (g: any) =>
+            !((g.roundId ?? 0) === rid && g.voterId === currentPlayerId && g.submissionId === key)
+        );
 
-      room.guesses.push({
-        voterId: currentPlayerId,
-        submissionId: key,
-        targetPlayerId,
-        roundId: rid,
+        room.guesses.push({
+          voterId: currentPlayerId,
+          submissionId: key,
+          targetPlayerId,
+          roundId: rid,
+        });
+
+        return room;
       });
-
-      return room;
-    });
+      setFirebaseError(null);
+    } catch (error) {
+      reportFirebaseError("Submit guess", error);
+    }
   };
 
   const finalizeGuesses = async () => {
     if (!isHost || !roomRef) return;
     await pausePlayback();
-    await update(roomRef, { phase: GamePhase.REVEAL, currentRevealIndex: 0 });
+    try {
+      await update(roomRef, { phase: GamePhase.REVEAL, currentRevealIndex: 0 });
+      setFirebaseError(null);
+    } catch (error) {
+      reportFirebaseError("Reveal guesses", error);
+    }
   };
 
   useEffect(() => {
@@ -1253,7 +1404,12 @@ function AppInner() {
 
     const isLast = gameState.currentRevealIndex >= submissions.length - 1;
     if (!isLast) {
-      await update(roomRef, { currentRevealIndex: gameState.currentRevealIndex + 1 });
+      try {
+        await update(roomRef, { currentRevealIndex: gameState.currentRevealIndex + 1 });
+        setFirebaseError(null);
+      } catch (error) {
+        reportFirebaseError("Next reveal", error);
+      }
       return;
     }
 
@@ -1276,7 +1432,12 @@ function AppInner() {
       return { ...p, score: baseScore + correct * 10 };
     });
 
-    await update(roomRef, { players: updatedPlayers, phase: GamePhase.SCOREBOARD });
+    try {
+      await update(roomRef, { players: updatedPlayers, phase: GamePhase.SCOREBOARD });
+      setFirebaseError(null);
+    } catch (error) {
+      reportFirebaseError("Finish round scoring", error);
+    }
   };
 
   const nextQuestion = async () => {
@@ -1289,34 +1450,79 @@ function AppInner() {
 
     const isGameEnd = gameState.currentQuestionIndex >= 9;
     if (isGameEnd) {
-      await update(roomRef, { phase: GamePhase.FINAL });
+      try {
+        await update(roomRef, { phase: GamePhase.FINAL });
+        setFirebaseError(null);
+      } catch (error) {
+        reportFirebaseError("Finish game", error);
+      }
       return;
     }
 
     const newRoundId = roundId + 1;
 
-    await update(roomRef, {
-      currentQuestionIndex: gameState.currentQuestionIndex + 1,
-      roundId: newRoundId,
-      phase: GamePhase.PROMPT,
-      submissions: [],
-      guesses: [],
-      currentRevealIndex: 0,
-    });
+    try {
+      await update(roomRef, {
+        currentQuestionIndex: gameState.currentQuestionIndex + 1,
+        roundId: newRoundId,
+        phase: GamePhase.PROMPT,
+        submissions: [],
+        guesses: [],
+        currentRevealIndex: 0,
+      });
+      setFirebaseError(null);
+    } catch (error) {
+      reportFirebaseError("Next question", error);
+    }
   };
 
   const resetRoomData = async () => {
     if (!isHost || !roomRef) return;
-    await update(roomRef, {
-      phase: GamePhase.LOBBY,
-      currentQuestionIndex: 0,
-      roundId: 0,
-      submissions: [],
-      guesses: [],
-      currentRevealIndex: 0,
-      // NOTE: do not wipe players
-    });
-    alert("Room reset ✅");
+    try {
+      await update(roomRef, {
+        phase: GamePhase.LOBBY,
+        currentQuestionIndex: 0,
+        roundId: 0,
+        submissions: [],
+        guesses: [],
+        currentRevealIndex: 0,
+        // NOTE: do not wipe players
+      });
+      setFirebaseError(null);
+      alert("Room reset");
+    } catch (error) {
+      reportFirebaseError("Reset room", error);
+    }
+  };
+
+  const endSessionForEveryone = async () => {
+    if (!roomRef) {
+      returnToStart();
+      return;
+    }
+
+    if (!isHost) {
+      returnToStart();
+      return;
+    }
+
+    const confirmed = window.confirm("End this game for everyone and clear saved room access?");
+    if (!confirmed) return;
+
+    await pausePlayback();
+
+    try {
+      await update(roomRef, {
+        phase: GamePhase.ENDED,
+        submissions: [],
+        guesses: [],
+        hostToken: "",
+        endedAt: Date.now(),
+      });
+      returnToStart();
+    } catch (error) {
+      reportFirebaseError("End session", error);
+    }
   };
 
   // ---------------------------
@@ -1384,6 +1590,13 @@ function AppInner() {
             </div>
           </div>
 
+          {firebaseError && (
+            <div className="p-4 bg-red-900/20 border border-red-500/50 rounded-xl flex items-start gap-2 text-xs text-red-300 text-left">
+              <AlertCircle size={16} className="mt-0.5 shrink-0" />
+              <span>{firebaseError}</span>
+            </div>
+          )}
+
           {!db && (
             <div className="p-4 bg-red-900/20 border border-red-500/50 rounded-xl flex items-center gap-2 text-xs text-red-400">
               <AlertCircle size={16} />
@@ -1426,6 +1639,30 @@ function AppInner() {
               </div>
             ))}
           </div>
+
+          {isHost && (
+            <div className="bg-[#181818] border border-[#282828] rounded-[2rem] p-6 flex flex-col sm:flex-row items-center justify-between gap-5">
+              <div className="text-center sm:text-left">
+                <div className="text-sm font-black uppercase tracking-widest text-[#1DB954]">
+                  Spotify
+                </div>
+                <div className="text-gray-400 text-sm mt-1">
+                  {(spotifyToken || hostToken)
+                    ? "Linked and ready before the first round."
+                    : "Link Spotify before starting so playback is ready."}
+                </div>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+                <Button onClick={connectSpotify} variant="spotify" className="justify-center">
+                  <Music size={18} />
+                  {(spotifyToken || hostToken) ? "Re-Sync Spotify" : "Sync Spotify"}
+                </Button>
+                <Button onClick={endSessionForEveryone} variant="outline" className="justify-center">
+                  End Session
+                </Button>
+              </div>
+            </div>
+          )}
 
           <div className="flex justify-center pt-8">
             {isHost ? (
@@ -1470,6 +1707,15 @@ function AppInner() {
             <Users size={14} />
             {(gameState.players as Player[]).length}
           </div>
+          {isHost && (
+            <button
+              onClick={endSessionForEveryone}
+              className="px-3 sm:px-4 py-1.5 sm:py-2 bg-red-500/10 text-red-300 rounded-full text-xs sm:text-sm font-black border border-red-500/30 flex items-center gap-2 hover:bg-red-500/20 transition-colors"
+            >
+              <XCircle size={14} />
+              <span className="hidden sm:inline">End</span>
+            </button>
+          )}
           <button
             onClick={() => setShowSettings(true)}
             className="p-1.5 text-gray-400 hover:text-white transition-colors"
@@ -1478,6 +1724,13 @@ function AppInner() {
           </button>
         </div>
       </header>
+
+      {firebaseError && (
+        <div className="bg-red-950/90 border-b border-red-500/40 px-4 sm:px-6 py-3 text-red-100 text-xs sm:text-sm font-bold flex items-start gap-2">
+          <AlertCircle size={18} className="mt-0.5 shrink-0 text-red-300" />
+          <span>{firebaseError}</span>
+        </div>
+      )}
 
       {showSettings && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl animate-in fade-in">
@@ -1586,13 +1839,27 @@ function AppInner() {
                 </div>
 
                 {isHost && (
-                  <div className="pt-2">
+                  <div className="pt-2 space-y-3">
                     <Button variant="danger" onClick={resetRoomData} className="w-full">
                       Reset Room Data
                     </Button>
                     <p className="text-xs text-gray-500 mt-2">
                       Resets phase + wipes submissions/guesses if anything gets stuck.
                     </p>
+                    <Button variant="outline" onClick={endSessionForEveryone} className="w-full">
+                      End Session For Everyone
+                    </Button>
+                    <p className="text-xs text-gray-500">
+                      Ends the room and clears saved rejoin data on connected devices.
+                    </p>
+                  </div>
+                )}
+
+                {!isHost && (
+                  <div className="pt-2">
+                    <Button variant="outline" onClick={returnToStart} className="w-full">
+                      Leave Session
+                    </Button>
                   </div>
                 )}
               </div>
@@ -2222,11 +2489,13 @@ function AppInner() {
               </div>
 
               <div className="flex flex-col sm:flex-row gap-8 sm:gap-12 justify-center pt-12 sm:pt-24 px-4">
-                <Button onClick={() => window.location.reload()} variant="primary" className="px-16 sm:px-32 py-8 text-3xl sm:text-5xl font-black uppercase italic">
-                  New Session
-                </Button>
-                <Button variant="outline" onClick={() => window.location.reload()} className="px-12 text-2xl uppercase tracking-widest font-black">
-                  Quit Game
+                {isHost && (
+                  <Button onClick={endSessionForEveryone} variant="primary" className="px-16 sm:px-32 py-8 text-3xl sm:text-5xl font-black uppercase italic">
+                    End Session
+                  </Button>
+                )}
+                <Button variant="outline" onClick={returnToStart} className="px-12 text-2xl uppercase tracking-widest font-black">
+                  Leave Game
                 </Button>
               </div>
             </div>
